@@ -22,8 +22,27 @@ function queryString(params = {}) {
   return text ? `?${text}` : '';
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(response, attempt) {
+  const retryAfter = Number(response.headers.get('retry-after'));
+  if (Number.isFinite(retryAfter) && retryAfter >= 0) {
+    return retryAfter * 1000;
+  }
+
+  const exponentialSeconds = Math.min(2 ** attempt, 30);
+  return exponentialSeconds * 1000 + Math.floor(Math.random() * 250);
+}
+
 export class SpotifyClient {
-  constructor({ tokenProvider, fetchImpl = globalThis.fetch, baseUrl = 'https://api.spotify.com/v1' }) {
+  constructor({
+    tokenProvider,
+    fetchImpl = globalThis.fetch,
+    baseUrl = 'https://api.spotify.com/v1',
+    maxRateRetries = 3,
+  }) {
     if (!tokenProvider?.getToken) {
       throw new TypeError('SpotifyClient requires a tokenProvider with getToken(forceRefresh).');
     }
@@ -34,9 +53,16 @@ export class SpotifyClient {
     this.tokenProvider = tokenProvider;
     this.fetch = fetchImpl;
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.maxRateRetries = Math.max(0, Math.floor(maxRateRetries));
   }
 
-  async request(path, { method = 'GET', query, body, retryAuth = true } = {}) {
+  async request(path, {
+    method = 'GET',
+    query,
+    body,
+    retryAuth = true,
+    rateRetry = 0,
+  } = {}) {
     const token = await this.tokenProvider.getToken(false);
     const response = await this.fetch(`${this.baseUrl}${path}${queryString(query)}`, {
       method,
@@ -49,7 +75,24 @@ export class SpotifyClient {
 
     if (response.status === 401 && retryAuth) {
       await this.tokenProvider.getToken(true);
-      return this.request(path, { method, query, body, retryAuth: false });
+      return this.request(path, {
+        method,
+        query,
+        body,
+        retryAuth: false,
+        rateRetry,
+      });
+    }
+
+    if (response.status === 429 && rateRetry < this.maxRateRetries) {
+      await sleep(retryDelayMs(response, rateRetry));
+      return this.request(path, {
+        method,
+        query,
+        body,
+        retryAuth,
+        rateRetry: rateRetry + 1,
+      });
     }
 
     if (!response.ok) {
