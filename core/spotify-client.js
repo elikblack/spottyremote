@@ -39,7 +39,7 @@ function retryDelayMs(response, attempt) {
 export class SpotifyClient {
   constructor({
     tokenProvider,
-    fetchImpl = globalThis.fetch,
+    fetchImpl = globalThis.fetch?.bind(globalThis),
     baseUrl = 'https://api.spotify.com/v1',
     maxRateRetries = 3,
   }) {
