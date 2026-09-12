@@ -113,6 +113,7 @@ export class SpotifyBrowserAuth {
         code_verifier: verifier,
       });
       this.saveToken(token);
+      this.storage.setItem(this.key('authorized_at'), String(Date.now()));
       return true;
     } finally {
       this.storage.removeItem(this.key('pkce_verifier'));
@@ -130,7 +131,10 @@ export class SpotifyBrowserAuth {
 
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(body.error_description || body.error || `Spotify token request failed (${response.status}).`);
+      const error = new Error(body.error_description || body.error || `Spotify token request failed (${response.status}).`);
+      error.code = body.error || null;
+      error.status = response.status;
+      throw error;
     }
     return body;
   }
@@ -149,13 +153,21 @@ export class SpotifyBrowserAuth {
     if (!refreshToken) throw new Error('No Spotify refresh token is available. Reconnect Spotify.');
     if (!this.clientId) throw new Error('Spotify Client ID is not configured.');
 
-    const token = await this.requestToken({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: this.clientId,
-    });
-    this.saveToken(token);
-    return token.access_token;
+    try {
+      const token = await this.requestToken({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: this.clientId,
+      });
+      this.saveToken(token);
+      return token.access_token;
+    } catch (error) {
+      if (error.code === 'invalid_grant') {
+        this.disconnect();
+        throw new Error('Spotify authorization expired. Reconnect Spotify.');
+      }
+      throw error;
+    }
   }
 
   async getToken(forceRefresh = false) {
@@ -171,7 +183,15 @@ export class SpotifyBrowserAuth {
   }
 
   disconnect() {
-    for (const name of ['access_token', 'refresh_token', 'expires_at', 'scope', 'pkce_verifier', 'oauth_state']) {
+    for (const name of [
+      'access_token',
+      'refresh_token',
+      'expires_at',
+      'scope',
+      'authorized_at',
+      'pkce_verifier',
+      'oauth_state',
+    ]) {
       this.storage.removeItem(this.key(name));
     }
   }
