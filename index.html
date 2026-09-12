@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SpottyRemote</title>
+  <link rel="stylesheet" href="web/styles.css">
+</head>
+<body>
+  <main class="remote">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">SPOTTYREMOTE</div>
+        <h1>Spotify remote</h1>
+      </div>
+      <div id="connection-status" class="status">Not connected</div>
+    </header>
+
+    <section id="setup" class="panel setup" hidden>
+      <h2>Connect Spotify</h2>
+      <p>Create a Spotify developer app, add the redirect URI below to its allowlist, then paste the app's Client ID here. The Client ID is not a secret and is stored only in this browser.</p>
+      <label>
+        Spotify Client ID
+        <input id="client-id" type="text" autocomplete="off" spellcheck="false" placeholder="Client ID">
+      </label>
+      <div class="redirect-row">
+        <span>Redirect URI</span>
+        <code id="redirect-uri"></code>
+      </div>
+      <div class="actions">
+        <button id="connect" type="button">Connect Spotify</button>
+      </div>
+      <p id="setup-message" class="message" aria-live="polite"></p>
+    </section>
+
+    <section id="player" class="player" hidden>
+      <div class="now-playing panel">
+        <div class="artwork-wrap">
+          <img id="artwork" alt="" hidden>
+          <div id="artwork-empty" class="artwork-empty">NO SIGNAL</div>
+        </div>
+
+        <div class="track-copy">
+          <div id="playback-label" class="eyebrow">PLAYBACK</div>
+          <h2 id="track-name">Nothing playing</h2>
+          <p id="artist-name">Start playback on a Spotify Connect device.</p>
+          <p id="album-name" class="muted"></p>
+        </div>
+      </div>
+
+      <section class="panel transport">
+        <div class="timeline">
+          <input id="progress" type="range" min="0" max="1" value="0" step="1000" aria-label="Track position">
+          <div class="time-row"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
+        </div>
+
+        <div class="transport-buttons" aria-label="Playback controls">
+          <button id="shuffle" type="button" class="secondary" title="Shuffle">SHUF</button>
+          <button id="previous" type="button" aria-label="Previous track">◀◀</button>
+          <button id="play-pause" type="button" class="primary" aria-label="Play">▶</button>
+          <button id="next" type="button" aria-label="Next track">▶▶</button>
+          <button id="repeat" type="button" class="secondary" title="Repeat">RPT</button>
+        </div>
+      </section>
+
+      <section class="panel routing">
+        <div class="control-row">
+          <label for="device">Output</label>
+          <div class="inline-control">
+            <select id="device" aria-label="Spotify Connect device"></select>
+            <button id="refresh-devices" type="button" class="small">↻</button>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <label for="volume">Volume <span id="volume-value">--</span></label>
+          <input id="volume" type="range" min="0" max="100" value="50" step="1">
+        </div>
+
+        <div class="footer-row">
+          <span id="device-detail" class="muted"></span>
+          <button id="disconnect" type="button" class="text-button">Disconnect</button>
+        </div>
+      </section>
+
+      <p id="player-message" class="message" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script type="module" src="web/app.js"></script>
+</body>
+</html>
