@@ -1,6 +1,7 @@
 import { SpotifyClient } from '../core/spotify-client.js';
 import { normalizePlayback, estimatedProgress } from '../core/playback-state.js';
 import { SpotifyBrowserAuth } from './browser-auth.js';
+import { CANONICAL_ORIGIN, SPOTIFY_CLIENT_ID } from './config.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -36,6 +37,7 @@ const els = {
 };
 
 const auth = new SpotifyBrowserAuth();
+if (!auth.clientId) auth.clientId = SPOTIFY_CLIENT_ID;
 const api = new SpotifyClient({ tokenProvider: auth });
 
 let playback = normalizePlayback(null);
@@ -63,6 +65,10 @@ function setConnectedUi(connected) {
   els.player.hidden = !connected;
   els.connectionStatus.textContent = connected ? 'Connected' : 'Not connected';
   els.connectionStatus.classList.toggle('ok', connected);
+}
+
+function isLocalDevelopment() {
+  return window.location.protocol === 'http:' && ['127.0.0.1', '[::1]', '::1'].includes(window.location.hostname);
 }
 
 function selectedDeviceId() {
@@ -299,6 +305,13 @@ async function init() {
   if (window.location.protocol === 'file:') {
     setConnectedUi(false);
     message(els.setupMessage, 'Serve SpottyRemote over HTTP(S); Spotify OAuth cannot use a file:// URL.');
+    els.connect.disabled = true;
+    return;
+  }
+
+  if (!isLocalDevelopment() && window.location.origin !== CANONICAL_ORIGIN) {
+    setConnectedUi(false);
+    message(els.setupMessage, `Spotify authorization is enabled only at ${CANONICAL_ORIGIN}/`);
     els.connect.disabled = true;
     return;
   }
