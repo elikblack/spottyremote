@@ -1,0 +1,8 @@
+# Local Spotty server state / credentials
+server/.spotty_tokens.json
+server/.spotty_tokens.json.tmp
+
+# Python noise
+__pycache__/
+*.pyc
+.DS_Store
