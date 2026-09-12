@@ -157,6 +157,15 @@ function renderDevices() {
   }
 }
 
+function handleLostSession(error) {
+  if (auth.hasSession) return false;
+  stopPolling();
+  els.clientId.value = auth.clientId;
+  setConnectedUi(false);
+  message(els.setupMessage, error?.message || 'Spotify authorization ended. Reconnect Spotify.');
+  return true;
+}
+
 async function refreshPlayback({ quiet = false } = {}) {
   try {
     const raw = await api.getPlaybackState();
@@ -164,8 +173,8 @@ async function refreshPlayback({ quiet = false } = {}) {
     renderPlayback();
     if (!quiet) message(els.playerMessage, '');
   } catch (error) {
+    if (handleLostSession(error)) return;
     if (!quiet) message(els.playerMessage, error.message);
-    if (error.status === 401) stopPolling();
   }
 }
 
@@ -177,6 +186,7 @@ async function refreshDevices({ quiet = false } = {}) {
     renderPlayback();
     if (!quiet) message(els.playerMessage, '');
   } catch (error) {
+    if (handleLostSession(error)) return;
     if (!quiet) message(els.playerMessage, error.message);
   }
 }
@@ -194,9 +204,9 @@ function startPolling() {
   stopPolling();
   refreshPlayback();
   refreshDevices({ quiet: true });
-  pollTimer = setInterval(() => refreshPlayback({ quiet: true }), 5000);
+  pollTimer = setInterval(() => refreshPlayback({ quiet: true }), 10_000);
   progressTimer = setInterval(renderProgress, 500);
-  deviceTimer = setInterval(() => refreshDevices({ quiet: true }), 30000);
+  deviceTimer = setInterval(() => refreshDevices({ quiet: true }), 60_000);
 }
 
 async function command(action, { refreshDelay = 350 } = {}) {
@@ -205,6 +215,7 @@ async function command(action, { refreshDelay = 350 } = {}) {
     await action();
     setTimeout(() => refreshPlayback({ quiet: true }), refreshDelay);
   } catch (error) {
+    if (handleLostSession(error)) return;
     message(els.playerMessage, error.message);
   }
 }
