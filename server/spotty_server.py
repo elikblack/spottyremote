@@ -5,7 +5,8 @@ Responsibilities:
 - own the Spotify OAuth/refresh-token session
 - expose a tiny HTTP API to Spotty hardware on the local network
 - avoid requiring Spotify credentials on the ESP32
-- proxy/caches album artwork so hardware never needs Spotify/CDN credentials
+- proxy/cache album artwork so hardware never needs Spotify/CDN credentials
+- expose generic device enumeration and playback transfer primitives
 
 Designed for Python 3.8+.
 """
@@ -55,8 +56,6 @@ def _b64url(data):
 
 
 def _json_bytes(value):
-    # Keep UTF-8 intact so small hardware clients can display ordinary names
-    # without first having to decode JSON \uXXXX escapes.
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
@@ -88,7 +87,7 @@ def token_request(fields):
         data=data,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "SpottyServer/1.0",
+            "User-Agent": "SpottyServer/1.1",
         },
         method="POST",
     )
@@ -146,7 +145,7 @@ def spotify_request(path, method="GET", query=None, body=None, retry_auth=True):
     payload = None
     headers = {
         "Authorization": "Bearer " + token,
-        "User-Agent": "SpottyServer/1.0",
+        "User-Agent": "SpottyServer/1.1",
     }
     if body is not None:
         payload = _json_bytes(body)
@@ -185,7 +184,11 @@ def api_result(status, raw):
             message = error.get("message")
         elif isinstance(error, str):
             message = error
-    return status, {"ok": False, "spotify_status": status, "error": message or "Spotify request failed"}
+    return status, {
+        "ok": False,
+        "spotify_status": status,
+        "error": message or "Spotify request failed",
+    }
 
 
 def player_summary(data):
@@ -197,7 +200,11 @@ def player_summary(data):
     artist_name = ""
     if item_type == "track":
         artists = item.get("artists") if isinstance(item.get("artists"), list) else []
-        names = [artist.get("name") for artist in artists if isinstance(artist, dict) and artist.get("name")]
+        names = [
+            artist.get("name")
+            for artist in artists
+            if isinstance(artist, dict) and artist.get("name")
+        ]
         artist_name = ", ".join(names)
     elif item_type == "episode":
         show = item.get("show") if isinstance(item.get("show"), dict) else {}
@@ -215,6 +222,8 @@ def player_summary(data):
         "is_playing": bool(data.get("is_playing")),
         "volume_percent": volume,
         "supports_volume": bool(device.get("supports_volume", True)),
+        "device_id": device.get("id") or "",
+        "device_name": device.get("name") or "",
     }
 
 
@@ -239,8 +248,6 @@ def _pick_artwork(images):
     if not candidates:
         return None
 
-    # Spotify normally supplies 640, 300 and 64 px squares. The 300 px image is
-    # ideal for the 240 px dial and saves bandwidth/PSRAM versus the 640 px copy.
     def score(image):
         width = image.get("width")
         return abs(width - 300) if isinstance(width, int) else 100000
@@ -262,7 +269,9 @@ def fetch_artwork(item_type, item_id):
     status, raw, _headers = spotify_request(endpoint)
     if status != 200:
         _status, data = api_result(status, raw)
-        raise RuntimeError(data.get("error") if isinstance(data, dict) else "Artwork metadata request failed")
+        raise RuntimeError(
+            data.get("error") if isinstance(data, dict) else "Artwork metadata request failed"
+        )
 
     item = decode_json(raw) or {}
     if item_type == "track":
@@ -277,7 +286,7 @@ def fetch_artwork(item_type, item_id):
 
     request = urllib.request.Request(
         image["url"],
-        headers={"User-Agent": "SpottyServer/1.0", "Accept": "image/*"},
+        headers={"User-Agent": "SpottyServer/1.1", "Accept": "image/*"},
         method="GET",
     )
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -298,7 +307,7 @@ def fetch_artwork(item_type, item_id):
 
 
 class SpottyHandler(BaseHTTPRequestHandler):
-    server_version = "SpottyServer/1.0"
+    server_version = "SpottyServer/1.1"
 
     def log_message(self, fmt, *args):
         print("{} - {}".format(self.client_address[0], fmt % args))
@@ -352,7 +361,11 @@ class SpottyHandler(BaseHTTPRequestHandler):
 <style>body{{font:16px system-ui;max-width:700px;margin:60px auto;padding:0 20px;background:#111;color:#eee}}a{{color:#6cf}}code{{background:#222;padding:2px 5px}}.state{{color:{color};font-weight:700}}</style></head>
 <body><h1>Spotty Server</h1><p class=\"state\">{state}</p>
 <p><a href=\"/auth/login\">Connect / reconnect Spotify</a></p>
-<p>Health: <code>/api/health</code><br>Player: <code>/api/player</code><br>Artwork: <code>/api/artwork?item_type=track&amp;track_id=...</code></p>
+<p>Health: <code>/api/health</code><br>
+Player: <code>/api/player</code><br>
+Devices: <code>/api/devices</code><br>
+Artwork: <code>/api/artwork?item_type=track&amp;track_id=...</code><br>
+Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code></p>
 </body></html>""".format(state=state, color=color))
             return
 
@@ -408,6 +421,9 @@ class SpottyHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/volume":
             self.handle_volume(query)
+            return
+        if parsed.path == "/api/transfer":
+            self.handle_transfer(query)
             return
 
         self.send_json(404, {"ok": False, "error": "Not found"})
@@ -521,7 +537,10 @@ class SpottyHandler(BaseHTTPRequestHandler):
 
             action_status, action_raw, _headers = spotify_request(target_path, "PUT")
             if 200 <= action_status < 300:
-                self.send_json(200, {"ok": True, "action": "pause" if target_path.endswith("pause") else "play"})
+                self.send_json(200, {
+                    "ok": True,
+                    "action": "pause" if target_path.endswith("pause") else "play",
+                })
             else:
                 _status, data = api_result(action_status, action_raw)
                 self.send_json(502, data)
@@ -538,9 +557,41 @@ class SpottyHandler(BaseHTTPRequestHandler):
 
         value = max(0, min(100, value))
         try:
-            status, raw, _headers = spotify_request("/me/player/volume", "PUT", {"volume_percent": value})
+            status, raw, _headers = spotify_request(
+                "/me/player/volume", "PUT", {"volume_percent": value}
+            )
             if 200 <= status < 300:
                 self.send_json(200, {"ok": True, "volume": value})
+            else:
+                _status, data = api_result(status, raw)
+                self.send_json(502, data)
+        except Exception as exc:
+            self.send_json(503, {"ok": False, "error": str(exc)})
+
+    def handle_transfer(self, query):
+        device_id = query.get("device_id", [None])[0]
+        raw_play = query.get("play", [None])[0]
+
+        if not device_id:
+            self.send_json(400, {"ok": False, "error": "device_id is required"})
+            return
+
+        body = {"device_ids": [device_id]}
+        if raw_play is not None:
+            normalized = raw_play.strip().lower()
+            if normalized not in ("true", "false", "1", "0"):
+                self.send_json(400, {"ok": False, "error": "play must be true or false"})
+                return
+            body["play"] = normalized in ("true", "1")
+
+        try:
+            status, raw, _headers = spotify_request("/me/player", "PUT", body=body)
+            if 200 <= status < 300:
+                self.send_json(200, {
+                    "ok": True,
+                    "device_id": device_id,
+                    "play": body.get("play"),
+                })
             else:
                 _status, data = api_result(status, raw)
                 self.send_json(502, data)
