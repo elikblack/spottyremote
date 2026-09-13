@@ -30,7 +30,7 @@ https://spotty.elistuff.com/
 
 The browser version uses Authorization Code with PKCE. No Spotify Client Secret is used or required. The configured Client ID is public by design and lives in `web/config.js`.
 
-The browser front end predates the LAN server and still owns its own browser-side Spotify session. It is useful as an independent remote and for selecting Spotify Connect devices.
+The browser front end predates the LAN server and still owns its own browser-side Spotify session. It remains useful as an independent remote and for richer controls.
 
 ## LAN server
 
@@ -40,7 +40,8 @@ The server:
 
 - owns the Spotify OAuth/refresh-token session used by hardware
 - refreshes Spotify access tokens centrally
-- exposes a small HTTP API to LAN clients
+- exposes a small generic HTTP API to LAN clients
+- enumerates Spotify Connect devices and transfers playback between them
 - proxies/caches album artwork so an ESP32 never needs Spotify/CDN credentials or TLS handling for artwork
 - binds to `0.0.0.0:8787` by default
 
@@ -79,7 +80,10 @@ POST /api/playpause
 POST /api/next
 POST /api/previous
 POST /api/volume?value=0..100
+POST /api/transfer?device_id=<spotify-device-id>&play=true|false
 ```
+
+`/api/transfer` is intentionally generic. Hardware decides which endpoint it prefers and when a transfer should happen; the server only performs the Spotify operation. The `play` argument is optional at the Spotify layer but the current hardware sends it explicitly.
 
 `/api/player` preserves the raw Spotify player object for compatibility but also exposes dial-friendly top-level fields:
 
@@ -91,7 +95,11 @@ artist_name
 is_playing
 volume_percent
 supports_volume
+device_id
+device_name
 ```
+
+Those active-device fields let a hardware client make endpoint decisions without parsing the nested raw player object.
 
 JSON is serialized as UTF-8 rather than escaping ordinary non-ASCII names as `\uXXXX`.
 
@@ -115,11 +123,12 @@ The shared Spotify behavior supports:
 - read current track and active device
 - play / pause
 - previous / next
-- seek in the browser client
 - volume
-- shuffle and repeat in the browser client
 - enumerate Spotify Connect devices
-- transfer playback between devices in the browser client
+- transfer playback between devices through both the browser and LAN server
+- seek, shuffle, and repeat in the browser client
+
+The Elecrow SpottyDial keeps its preferred-device policy on the device. Its current v1.1 development firmware resolves the friendly name `Everywhere` through `/api/devices`, then uses `/api/transfer` as needed. This keeps future hardware remotes free to implement different endpoint rules without adding remote-specific policy to the server.
 
 ## Security rules
 
@@ -133,4 +142,4 @@ The shared Spotify behavior supports:
 
 ## Direction
 
-The Elecrow CrowPanel SpottyDial now uses the LAN server as its Spotify boundary. Future hardware controls should continue using the same pattern: hardware expresses intents and consumes compact state, while OAuth, Spotify API details, retries, and artwork fetching stay in the service layer.
+The LAN server is the Spotify boundary for hardware, but not the owner of each remote's behavior. Hardware expresses intents and device-specific policy; the service layer owns OAuth, Spotify API details, token refresh, generic playback/device primitives, retries, and artwork fetching.
