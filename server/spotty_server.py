@@ -5,6 +5,7 @@ Responsibilities:
 - own the Spotify OAuth/refresh-token session
 - expose a tiny HTTP API to Spotty hardware on the local network
 - avoid requiring Spotify credentials on the ESP32
+- proxy/caches album artwork so hardware never needs Spotify/CDN credentials
 
 Designed for Python 3.8+.
 """
@@ -19,6 +20,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -38,9 +40,14 @@ SCOPES = [
     "user-modify-playback-state",
 ]
 
+ARTWORK_CACHE_ITEMS = 12
+ARTWORK_MAX_BYTES = 2 * 1024 * 1024
+
 _oauth_state = None
 _pkce_verifier = None
 _token_lock = threading.Lock()
+_artwork_cache = OrderedDict()
+_artwork_cache_lock = threading.Lock()
 
 
 def _b64url(data):
@@ -48,7 +55,9 @@ def _b64url(data):
 
 
 def _json_bytes(value):
-    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+    # Keep UTF-8 intact so small hardware clients can display ordinary names
+    # without first having to decode JSON \uXXXX escapes.
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def load_tokens():
@@ -179,6 +188,115 @@ def api_result(status, raw):
     return status, {"ok": False, "spotify_status": status, "error": message or "Spotify request failed"}
 
 
+def player_summary(data):
+    data = data if isinstance(data, dict) else {}
+    item = data.get("item") if isinstance(data.get("item"), dict) else {}
+    device = data.get("device") if isinstance(data.get("device"), dict) else {}
+    item_type = item.get("type") or "track"
+
+    artist_name = ""
+    if item_type == "track":
+        artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+        names = [artist.get("name") for artist in artists if isinstance(artist, dict) and artist.get("name")]
+        artist_name = ", ".join(names)
+    elif item_type == "episode":
+        show = item.get("show") if isinstance(item.get("show"), dict) else {}
+        artist_name = show.get("name") or item.get("publisher") or ""
+
+    volume = device.get("volume_percent")
+    if not isinstance(volume, int):
+        volume = None
+
+    return {
+        "track_id": item.get("id") or "",
+        "item_type": item_type,
+        "track_name": item.get("name") or "",
+        "artist_name": artist_name,
+        "is_playing": bool(data.get("is_playing")),
+        "volume_percent": volume,
+        "supports_volume": bool(device.get("supports_volume", True)),
+    }
+
+
+def _artwork_cache_get(key):
+    with _artwork_cache_lock:
+        value = _artwork_cache.get(key)
+        if value is not None:
+            _artwork_cache.move_to_end(key)
+        return value
+
+
+def _artwork_cache_put(key, value):
+    with _artwork_cache_lock:
+        _artwork_cache[key] = value
+        _artwork_cache.move_to_end(key)
+        while len(_artwork_cache) > ARTWORK_CACHE_ITEMS:
+            _artwork_cache.popitem(last=False)
+
+
+def _pick_artwork(images):
+    candidates = [image for image in images if isinstance(image, dict) and image.get("url")]
+    if not candidates:
+        return None
+
+    # Spotify normally supplies 640, 300 and 64 px squares. The 300 px image is
+    # ideal for the 240 px dial and saves bandwidth/PSRAM versus the 640 px copy.
+    def score(image):
+        width = image.get("width")
+        return abs(width - 300) if isinstance(width, int) else 100000
+
+    return min(candidates, key=score)
+
+
+def fetch_artwork(item_type, item_id):
+    item_type = item_type if item_type in ("track", "episode") else "track"
+    key = "{}:{}".format(item_type, item_id)
+    cached = _artwork_cache_get(key)
+    if cached is not None:
+        return cached
+
+    endpoint = "/tracks/{}".format(urllib.parse.quote(item_id, safe=""))
+    if item_type == "episode":
+        endpoint = "/episodes/{}".format(urllib.parse.quote(item_id, safe=""))
+
+    status, raw, _headers = spotify_request(endpoint)
+    if status != 200:
+        _status, data = api_result(status, raw)
+        raise RuntimeError(data.get("error") if isinstance(data, dict) else "Artwork metadata request failed")
+
+    item = decode_json(raw) or {}
+    if item_type == "track":
+        album = item.get("album") if isinstance(item.get("album"), dict) else {}
+        images = album.get("images") if isinstance(album.get("images"), list) else []
+    else:
+        images = item.get("images") if isinstance(item.get("images"), list) else []
+
+    image = _pick_artwork(images)
+    if not image:
+        raise RuntimeError("No artwork available for this item")
+
+    request = urllib.request.Request(
+        image["url"],
+        headers={"User-Agent": "SpottyServer/1.0", "Accept": "image/*"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        content_type = response.headers.get_content_type() or "image/jpeg"
+        payload = response.read(ARTWORK_MAX_BYTES + 1)
+
+    if len(payload) > ARTWORK_MAX_BYTES:
+        raise RuntimeError("Artwork exceeded {} bytes".format(ARTWORK_MAX_BYTES))
+
+    result = {
+        "payload": payload,
+        "content_type": content_type,
+        "width": int(image.get("width") or 0),
+        "height": int(image.get("height") or 0),
+    }
+    _artwork_cache_put(key, result)
+    return result
+
+
 class SpottyHandler(BaseHTTPRequestHandler):
     server_version = "SpottyServer/1.0"
 
@@ -191,6 +309,16 @@ class SpottyHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def send_bytes(self, status, payload, content_type, headers=None):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        for key, value in (headers or {}).items():
+            self.send_header(key, str(value))
         self.end_headers()
         self.wfile.write(payload)
 
@@ -224,7 +352,7 @@ class SpottyHandler(BaseHTTPRequestHandler):
 <style>body{{font:16px system-ui;max-width:700px;margin:60px auto;padding:0 20px;background:#111;color:#eee}}a{{color:#6cf}}code{{background:#222;padding:2px 5px}}.state{{color:{color};font-weight:700}}</style></head>
 <body><h1>Spotty Server</h1><p class=\"state\">{state}</p>
 <p><a href=\"/auth/login\">Connect / reconnect Spotify</a></p>
-<p>Health: <code>/api/health</code><br>Player: <code>/api/player</code></p>
+<p>Health: <code>/api/health</code><br>Player: <code>/api/player</code><br>Artwork: <code>/api/artwork?item_type=track&amp;track_id=...</code></p>
 </body></html>""".format(state=state, color=color))
             return
 
@@ -247,6 +375,10 @@ class SpottyHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/player":
             self.handle_player()
+            return
+
+        if parsed.path == "/api/artwork":
+            self.handle_artwork(parsed)
             return
 
         if parsed.path == "/api/devices":
@@ -340,9 +472,39 @@ class SpottyHandler(BaseHTTPRequestHandler):
 
         out_status, data = api_result(status, raw)
         if 200 <= out_status < 300:
-            self.send_json(200, {"ok": True, "active": True, "player": data})
+            summary = player_summary(data)
+            response = {"ok": True, "active": True}
+            response.update(summary)
+            response["player"] = data
+            self.send_json(200, response)
         else:
             self.send_json(502, data)
+
+    def handle_artwork(self, parsed):
+        query = urllib.parse.parse_qs(parsed.query)
+        item_id = query.get("track_id", [None])[0]
+        item_type = query.get("item_type", ["track"])[0]
+
+        if not item_id or not item_id.isalnum():
+            self.send_json(400, {"ok": False, "error": "track_id must be a Spotify item id"})
+            return
+        if item_type not in ("track", "episode"):
+            self.send_json(400, {"ok": False, "error": "item_type must be track or episode"})
+            return
+
+        try:
+            artwork = fetch_artwork(item_type, item_id)
+            self.send_bytes(
+                200,
+                artwork["payload"],
+                artwork["content_type"],
+                {
+                    "X-Artwork-Width": artwork["width"],
+                    "X-Artwork-Height": artwork["height"],
+                },
+            )
+        except Exception as exc:
+            self.send_json(502, {"ok": False, "error": str(exc)})
 
     def handle_playpause(self):
         try:
