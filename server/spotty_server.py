@@ -7,6 +7,7 @@ Responsibilities:
 - avoid requiring Spotify credentials on the ESP32
 - proxy/cache album artwork so hardware never needs Spotify/CDN credentials
 - expose generic device enumeration and playback transfer primitives
+- expose a generic playlist-item append primitive
 
 Designed for Python 3.8+.
 """
@@ -39,6 +40,8 @@ SCOPES = [
     "user-read-playback-state",
     "user-read-currently-playing",
     "user-modify-playback-state",
+    "playlist-modify-private",
+    "playlist-modify-public",
 ]
 
 ARTWORK_CACHE_ITEMS = 12
@@ -57,6 +60,10 @@ def _b64url(data):
 
 def _json_bytes(value):
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _valid_spotify_id(value):
+    return bool(value) and value.isalnum()
 
 
 def load_tokens():
@@ -353,20 +360,24 @@ class SpottyHandler(BaseHTTPRequestHandler):
         parsed = self.parsed_url()
 
         if parsed.path == "/":
-            authorized = bool(load_tokens().get("refresh_token"))
+            tokens = load_tokens()
+            authorized = bool(tokens.get("refresh_token"))
             state = "AUTHORIZED" if authorized else "NOT AUTHORIZED"
             color = "#33cc66" if authorized else "#cc9933"
+            scopes = tokens.get("scope") or "none"
             self.send_html(200, """<!doctype html>
 <html><head><meta charset=\"utf-8\"><title>Spotty Server</title>
 <style>body{{font:16px system-ui;max-width:700px;margin:60px auto;padding:0 20px;background:#111;color:#eee}}a{{color:#6cf}}code{{background:#222;padding:2px 5px}}.state{{color:{color};font-weight:700}}</style></head>
 <body><h1>Spotty Server</h1><p class=\"state\">{state}</p>
 <p><a href=\"/auth/login\">Connect / reconnect Spotify</a></p>
+<p>Granted scopes: <code>{scopes}</code></p>
 <p>Health: <code>/api/health</code><br>
 Player: <code>/api/player</code><br>
 Devices: <code>/api/devices</code><br>
 Artwork: <code>/api/artwork?item_type=track&amp;track_id=...</code><br>
-Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code></p>
-</body></html>""".format(state=state, color=color))
+Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code><br>
+Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=track&amp;item_id=...</code></p>
+</body></html>""".format(state=state, color=color, scopes=scopes))
             return
 
         if parsed.path == "/api/health":
@@ -375,6 +386,7 @@ Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code></p>
                 "ok": True,
                 "service": "spotty",
                 "authorized": bool(tokens.get("refresh_token")),
+                "scope": tokens.get("scope") or "",
             })
             return
 
@@ -424,6 +436,9 @@ Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code></p>
             return
         if parsed.path == "/api/transfer":
             self.handle_transfer(query)
+            return
+        if parsed.path == "/api/playlist/add":
+            self.handle_playlist_add(query)
             return
 
         self.send_json(404, {"ok": False, "error": "Not found"})
@@ -501,7 +516,7 @@ Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code></p>
         item_id = query.get("track_id", [None])[0]
         item_type = query.get("item_type", ["track"])[0]
 
-        if not item_id or not item_id.isalnum():
+        if not _valid_spotify_id(item_id):
             self.send_json(400, {"ok": False, "error": "track_id must be a Spotify item id"})
             return
         if item_type not in ("track", "episode"):
@@ -591,6 +606,44 @@ Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code></p>
                     "ok": True,
                     "device_id": device_id,
                     "play": body.get("play"),
+                })
+            else:
+                _status, data = api_result(status, raw)
+                self.send_json(502, data)
+        except Exception as exc:
+            self.send_json(503, {"ok": False, "error": str(exc)})
+
+    def handle_playlist_add(self, query):
+        playlist_id = query.get("playlist_id", [None])[0]
+        item_id = query.get("item_id", [None])[0]
+        item_type = query.get("item_type", ["track"])[0]
+
+        if not _valid_spotify_id(playlist_id):
+            self.send_json(400, {"ok": False, "error": "playlist_id must be a Spotify playlist id"})
+            return
+        if not _valid_spotify_id(item_id):
+            self.send_json(400, {"ok": False, "error": "item_id must be a Spotify item id"})
+            return
+        if item_type not in ("track", "episode"):
+            self.send_json(400, {"ok": False, "error": "item_type must be track or episode"})
+            return
+
+        spotify_uri = "spotify:{}:{}".format(item_type, item_id)
+        path = "/playlists/{}/items".format(urllib.parse.quote(playlist_id, safe=""))
+        try:
+            status, raw, _headers = spotify_request(
+                path,
+                "POST",
+                body={"uris": [spotify_uri]},
+            )
+            if 200 <= status < 300:
+                data = decode_json(raw) or {}
+                self.send_json(200, {
+                    "ok": True,
+                    "playlist_id": playlist_id,
+                    "item_type": item_type,
+                    "item_id": item_id,
+                    "snapshot_id": data.get("snapshot_id") or "",
                 })
             else:
                 _status, data = api_result(status, raw)
