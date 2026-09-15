@@ -25,12 +25,15 @@ DOMAIN = "gui/{}".format(os.getuid())
 SERVICE = "{}/{}".format(DOMAIN, LABEL)
 
 
-def run_launchctl(*args, check=False):
-    return subprocess.run(
-        ["launchctl"] + list(args),
-        check=check,
-        text=True,
-    )
+def run_launchctl(*args, check=False, quiet=False):
+    kwargs = {
+        "check": check,
+        "text": True,
+    }
+    if quiet:
+        kwargs["stdout"] = subprocess.DEVNULL
+        kwargs["stderr"] = subprocess.DEVNULL
+    return subprocess.run(["launchctl"] + list(args), **kwargs)
 
 
 def environment_for_agent():
@@ -61,9 +64,9 @@ def install():
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Remove an older loaded copy before replacing the plist. Ignore errors when
-    # the agent has never been installed or is already unloaded.
-    run_launchctl("bootout", DOMAIN, str(PLIST_PATH))
+    # Remove an older loaded copy before replacing the plist. A first install or
+    # an already-unloaded agent is normal, so keep those launchctl errors quiet.
+    run_launchctl("bootout", DOMAIN, str(PLIST_PATH), quiet=True)
 
     plist = {
         "Label": LABEL,
@@ -96,7 +99,7 @@ def uninstall():
     if sys.platform != "darwin":
         raise SystemExit("This installer is for macOS launchd.")
 
-    run_launchctl("bootout", DOMAIN, str(PLIST_PATH))
+    run_launchctl("bootout", DOMAIN, str(PLIST_PATH), quiet=True)
     try:
         PLIST_PATH.unlink()
     except FileNotFoundError:
