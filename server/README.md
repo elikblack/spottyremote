@@ -36,7 +36,7 @@ For normal use, run it through the supervisor instead:
 python3 server/spotty_supervisor.py
 ```
 
-The supervisor starts `spotty_instrumented.py`, which wraps the generic core server with metrics, the LAN dashboard, shared player-state caching, adaptive idle polling, and Spotify rate-limit cooldown handling. The supervisor checks `/api/health` periodically and restarts the server if the process exits or if three consecutive health checks fail. Rapid repeated failures use a bounded exponential restart delay so a persistent problem cannot create a tight crash loop.
+The supervisor starts `spotty_history_server.py`, which layers persistent Spotty-managed playback history on top of `spotty_instrumented.py`. The instrumented layer provides metrics, the LAN dashboard, shared player-state caching, adaptive idle polling, and Spotify rate-limit cooldown handling. The supervisor checks `/api/health` periodically and restarts the server if the process exits or if three consecutive health checks fail. Rapid repeated failures use a bounded exponential restart delay so a persistent problem cannot create a tight crash loop.
 
 Then, on that same Mac, open:
 
@@ -75,6 +75,30 @@ GET /api/player?refresh=1
 ```
 
 which bypasses the normal player cache but still respects an active Spotify cooldown.
+
+## Spotty playback history
+
+The normal server runtime keeps a local history of tracks played during Spotty-managed playback sessions. This is deliberately not Spotify account history: a playback session is armed by a successful play, play/pause-to-play, next, previous, or transfer-and-play command that came through Spotty Server. While that managed session continues, newly observed tracks are appended to the local log. If playback disappears or moves away from the managed device, the session ends.
+
+The history file is local server state and is ignored by Git:
+
+```text
+server/.spotty_play_history.jsonl
+```
+
+A readable history page is linked from the dashboard:
+
+```text
+http://127.0.0.1:8787/history
+```
+
+The backing JSON API is:
+
+```text
+GET /api/history?limit=500
+```
+
+History records include the observation time, Spotify item ID/type, title, artist, album when available, output device, and playback context URI. Logging is passive: it uses the same authoritative player refreshes already performed by the shared player cache and does not add Spotify API traffic.
 
 ## Recommended macOS service setup
 
@@ -124,6 +148,8 @@ The first hardware test should use the numeric LAN IP address so hostname resolu
 ```text
 GET  /api/health
 GET  /api/metrics
+GET  /history
+GET  /api/history?limit=500
 GET  /api/player
 GET  /api/player?refresh=1
 GET  /api/devices
@@ -159,7 +185,7 @@ The macOS installer copies any of these values that are present in its environme
 
 ## Security model
 
-This first version is LAN-only and does not authenticate clients. Anyone who can reach the server on port 8787 can issue playback or playlist-modification commands. Run it only on a trusted local network and do not expose port 8787 to the public internet.
+This first version is LAN-only and does not authenticate clients. Anyone who can reach the server on port 8787 can issue playback or playlist-modification commands and can read the local Spotty playback history. Run it only on a trusted local network and do not expose port 8787 to the public internet.
 
 If Spotty later needs remote access or untrusted-network use, add device authentication and HTTPS before exposing it.
 
