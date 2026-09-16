@@ -2,7 +2,8 @@
 """Run Spotty Server with lightweight Spotify Web API request accounting.
 
 This keeps the production server implementation untouched while exposing
-GET /api/metrics for diagnosing Spotify request volume and 429s.
+GET /api/metrics for diagnosing Spotify request volume and 429s, plus a small
+LAN status dashboard at GET /.
 """
 
 import threading
@@ -10,6 +11,7 @@ import time
 import urllib.parse
 from collections import Counter, deque
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import spotty_server as core
 
@@ -20,6 +22,7 @@ _totals = Counter()
 _status_totals = Counter()
 _started_at = time.time()
 _original_spotify_request = core.spotify_request
+STATUS_FILE = Path(__file__).resolve().with_name("status.html")
 
 
 def _trim_recent(now):
@@ -67,9 +70,19 @@ def metrics_snapshot():
         }
 
 
+def status_page():
+    try:
+        return STATUS_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        return "<h1>Spotty Server</h1><p>Dashboard unavailable: {}</p>".format(exc)
+
+
 class InstrumentedSpottyHandler(core.SpottyHandler):
     def do_GET(self):
         parsed = self.parsed_url()
+        if parsed.path == "/":
+            self.send_html(200, status_page())
+            return
         if parsed.path == "/api/metrics":
             self.send_json(200, metrics_snapshot())
             return
@@ -137,6 +150,7 @@ class InstrumentedSpottyHandler(core.SpottyHandler):
 if __name__ == "__main__":
     print("Spotty Server (instrumented)")
     print("  Listening: http://{}:{}".format(core.HOST, core.PORT))
+    print("  Dashboard: http://127.0.0.1:{}/".format(core.PORT))
     print("  Metrics:   http://127.0.0.1:{}/api/metrics".format(core.PORT))
     print("  Token file: {}".format(core.TOKEN_FILE))
     print()
