@@ -53,7 +53,7 @@
   <header>
     <div>
       <h1>Spotty Server</h1>
-      <p class="muted">LAN diagnostics · metrics refresh automatically · Spotify state refreshes only on request</p>
+      <p class="muted">LAN diagnostics · shared player cache · adaptive idle backoff · Spotify cooldown protection</p>
     </div>
     <div id="updated" class="muted">Loading…</div>
   </header>
@@ -85,13 +85,27 @@
     </div>
 
     <div class="card">
-      <h2>Requests by endpoint</h2>
-      <table><thead><tr><th>Endpoint</th><th>Last 60s</th><th>Total</th></tr></thead><tbody id="endpoint-body"></tbody></table>
+      <h2>Traffic policy</h2>
+      <div class="kv">
+        <div>Player cache</div><div id="cache-state">—</div>
+        <div>Cache age</div><div id="cache-age">—</div>
+        <div>Next Spotify poll</div><div id="cache-refresh">—</div>
+        <div>Cache hits</div><div id="cache-hits">—</div>
+        <div>Suppressed calls</div><div id="suppressed">—</div>
+        <div>Spotify cooldown</div><div id="cooldown">—</div>
+        <div>Last 429</div><div id="last429">—</div>
+      </div>
+      <p class="muted" style="margin-top:10px">When playback is inactive the server progressively backs off Spotify polling while continuing to answer hardware from its shared LAN cache.</p>
     </div>
 
     <div class="card">
       <h2>Responses by status</h2>
       <table><thead><tr><th>Status</th><th>Last 60s</th><th>Total</th></tr></thead><tbody id="status-body"></tbody></table>
+    </div>
+
+    <div class="card wide">
+      <h2>Requests by endpoint</h2>
+      <table><thead><tr><th>Endpoint</th><th>Last 60s</th><th>Total</th></tr></thead><tbody id="endpoint-body"></tbody></table>
     </div>
 
     <div class="card">
@@ -103,7 +117,7 @@
         <div>Device</div><div id="player-device">—</div>
         <div>Volume</div><div id="volume">—</div>
       </div>
-      <div class="actions"><button id="refresh-player">Refresh player</button></div>
+      <div class="actions"><button id="refresh-player">Refresh player now</button></div>
     </div>
 
     <div class="card">
@@ -118,6 +132,7 @@
         <div>Health</div><div><code>/api/health</code></div>
         <div>Metrics</div><div><code>/api/metrics</code></div>
         <div>Player</div><div><code>/api/player</code></div>
+        <div>Force player refresh</div><div><code>/api/player?refresh=1</code></div>
         <div>Devices</div><div><code>/api/devices</code></div>
         <div>Artwork</div><div><code>/api/artwork?item_type=track&amp;track_id=…</code></div>
       </div>
@@ -133,6 +148,13 @@ function fmtUptime(seconds) {
   const h = Math.floor(seconds / 3600); seconds %= 3600;
   const m = Math.floor(seconds / 60); const s = Math.floor(seconds % 60);
   return [d ? `${d}d` : '', h || d ? `${h}h` : '', m || h || d ? `${m}m` : '', `${s}s`].filter(Boolean).join(' ');
+}
+
+function fmtDelay(seconds) {
+  seconds = Math.max(0, Number(seconds) || 0);
+  if (seconds <= 0) return 'due now';
+  if (seconds < 60) return `in ${Math.ceil(seconds)}s`;
+  return `in ${Math.ceil(seconds / 60)}m`;
 }
 
 async function getJson(path) {
@@ -175,6 +197,33 @@ async function refreshCore() {
     $('rate429').className = rate429 ? 'bad' : 'good';
     fillTable($('endpoint-body'), metrics.last_60s_by_endpoint, metrics.total_by_endpoint);
     fillTable($('status-body'), metrics.last_60s_by_status, metrics.total_by_status);
+
+    const cache = metrics.player_cache || {};
+    $('cache-state').textContent = cache.state || 'unknown';
+    $('cache-state').className = cache.state === 'playing' ? 'good' : cache.state === 'inactive' ? 'muted' : '';
+    $('cache-age').textContent = cache.state === 'unknown' ? '—' : `${cache.age_seconds || 0}s`;
+    $('cache-refresh').textContent = cache.state === 'unknown' ? '—' : fmtDelay(cache.refresh_in_seconds);
+    $('cache-hits').textContent = cache.hits_since_start || 0;
+
+    const policy = metrics.traffic_policy || {};
+    $('suppressed').textContent = policy.spotify_requests_suppressed_since_start || 0;
+    const cooldownSeconds = Number(policy.spotify_cooldown_seconds || 0);
+    if (cooldownSeconds > 0) {
+      $('cooldown').textContent = `${fmtDelay(cooldownSeconds)} · ${policy.spotify_cooldown_reason || 'rate limited'}`;
+      $('cooldown').className = 'bad';
+    } else {
+      $('cooldown').textContent = 'None';
+      $('cooldown').className = 'good';
+    }
+    if (policy.last_429_at) {
+      const stamp = new Date(Number(policy.last_429_at) * 1000).toLocaleString();
+      const reason = policy.last_429_reason ? ` · ${policy.last_429_reason}` : '';
+      const retry = policy.last_retry_after_seconds ? ` · retry ${policy.last_retry_after_seconds}s` : '';
+      $('last429').textContent = `${stamp}${reason}${retry}`;
+    } else {
+      $('last429').textContent = 'None since start';
+    }
+
     $('updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     $('server-status').textContent = e.message; $('server-status').className = 'bad';
@@ -184,7 +233,7 @@ async function refreshCore() {
 async function refreshPlayer() {
   const button = $('refresh-player'); button.disabled = true;
   try {
-    const p = await getJson('/api/player');
+    const p = await getJson('/api/player?refresh=1');
     if (!p.active) {
       $('playback').textContent = 'No active player'; $('playback').className = 'muted';
       $('track').textContent = $('artist').textContent = $('player-device').textContent = $('volume').textContent = '—';
