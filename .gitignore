@@ -1,6 +1,7 @@
 # Local Spotty server state / credentials
 server/.spotty_tokens.json
 server/.spotty_tokens.json.tmp
+server/.spotty_play_history.jsonl
 
 # Python noise
 __pycache__/
