@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 
-SERVER_FILE = Path(__file__).resolve().parent / "spotty_instrumented.py"
+SERVER_FILE = Path(__file__).resolve().parent / "spotty_history_server.py"
 PORT = int(os.environ.get("SPOTTY_PORT", "8787"))
 HEALTH_URL = "http://127.0.0.1:{}/api/health".format(PORT)
 
