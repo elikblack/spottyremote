@@ -24,7 +24,7 @@ Spotty requests playback-control plus public/private playlist-modification scope
 
 ## Run
 
-For quick development you can still run the server directly:
+For quick development you can still run the core server directly:
 
 ```bash
 python3 server/spotty_server.py
@@ -36,7 +36,7 @@ For normal use, run it through the supervisor instead:
 python3 server/spotty_supervisor.py
 ```
 
-The supervisor starts `spotty_server.py`, checks `/api/health` periodically, and restarts the server if the process exits or if three consecutive health checks fail. Rapid repeated failures use a bounded exponential restart delay so a persistent problem cannot create a tight crash loop.
+The supervisor starts `spotty_instrumented.py`, which wraps the generic core server with metrics, the LAN dashboard, shared player-state caching, adaptive idle polling, and Spotify rate-limit cooldown handling. The supervisor checks `/api/health` periodically and restarts the server if the process exits or if three consecutive health checks fail. Rapid repeated failures use a bounded exponential restart delay so a persistent problem cannot create a tight crash loop.
 
 Then, on that same Mac, open:
 
@@ -51,6 +51,30 @@ server/.spotty_tokens.json
 ```
 
 That file is ignored by Git and should not be copied into the repository.
+
+## Spotify traffic policy
+
+Hardware clients are allowed to poll the LAN server frequently. The instrumented server decides when an upstream Spotify refresh is actually necessary, so adding more Spotty devices does not multiply Spotify polling traffic.
+
+Player-state refresh policy:
+
+```text
+playing        5 seconds
+paused         15 seconds
+inactive       15s, 30s, 60s, 120s, then 300s between Spotify checks
+```
+
+An explicit playback command marks the player cache dirty so the next player read checks Spotify again. The previous cached value is retained as a stale fallback if Spotify is temporarily rate limited.
+
+When Spotify returns HTTP 429, Spotty records the response, honors `Retry-After` when present, and blocks further upstream Spotify calls until the cooldown expires. If no retry interval is supplied, Spotty uses a conservative local fallback. The dashboard and `/api/metrics` expose current cooldown state, cache state, cache hits, and suppressed upstream requests.
+
+The manual dashboard button uses:
+
+```text
+GET /api/player?refresh=1
+```
+
+which bypasses the normal player cache but still respects an active Spotify cooldown.
 
 ## Recommended macOS service setup
 
@@ -99,7 +123,9 @@ The first hardware test should use the numeric LAN IP address so hostname resolu
 
 ```text
 GET  /api/health
+GET  /api/metrics
 GET  /api/player
+GET  /api/player?refresh=1
 GET  /api/devices
 GET  /api/artwork?item_type=track&track_id=...
 POST /api/play
