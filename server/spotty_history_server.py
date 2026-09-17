@@ -73,7 +73,11 @@ class HistorySpottyHandler(base.InstrumentedSpottyHandler):
             "/api/previous",
             "/api/transfer",
         }:
-            self._history_command = (parsed.path, _cached_device_id())
+            command_device_id = _cached_device_id()
+            if parsed.path == "/api/play":
+                query = urllib.parse.parse_qs(parsed.query)
+                command_device_id = query.get("device_id", [command_device_id])[0]
+            self._history_command = (parsed.path, command_device_id)
         super().do_POST()
 
 
