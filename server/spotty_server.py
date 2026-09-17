@@ -375,6 +375,8 @@ class SpottyHandler(BaseHTTPRequestHandler):
 Player: <code>/api/player</code><br>
 Devices: <code>/api/devices</code><br>
 Artwork: <code>/api/artwork?item_type=track&amp;track_id=...</code><br>
+Play: <code>POST /api/play?device_id=...</code> (device_id optional)<br>
+Volume: <code>POST /api/volume?value=...&amp;device_id=...</code> (device_id optional)<br>
 Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code><br>
 Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=track&amp;item_id=...</code></p>
 </body></html>""".format(state=state, color=color, scopes=scopes))
@@ -417,7 +419,9 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         query = urllib.parse.parse_qs(parsed.query)
 
         if parsed.path == "/api/play":
-            self.proxy_empty("/me/player/play", "PUT")
+            device_id = query.get("device_id", [None])[0]
+            spotify_query = {"device_id": device_id} if device_id else None
+            self.proxy_empty("/me/player/play", "PUT", spotify_query)
             return
         if parsed.path == "/api/pause":
             self.proxy_empty("/me/player/pause", "PUT")
@@ -564,6 +568,7 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
 
     def handle_volume(self, query):
         raw_value = query.get("value", [None])[0]
+        device_id = query.get("device_id", [None])[0]
         try:
             value = int(raw_value)
         except (TypeError, ValueError):
@@ -571,12 +576,20 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
             return
 
         value = max(0, min(100, value))
+        spotify_query = {"volume_percent": value}
+        if device_id:
+            spotify_query["device_id"] = device_id
+
         try:
             status, raw, _headers = spotify_request(
-                "/me/player/volume", "PUT", {"volume_percent": value}
+                "/me/player/volume", "PUT", spotify_query
             )
             if 200 <= status < 300:
-                self.send_json(200, {"ok": True, "volume": value})
+                self.send_json(200, {
+                    "ok": True,
+                    "volume": value,
+                    "device_id": device_id or "",
+                })
             else:
                 _status, data = api_result(status, raw)
                 self.send_json(502, data)
@@ -651,9 +664,9 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         except Exception as exc:
             self.send_json(503, {"ok": False, "error": str(exc)})
 
-    def proxy_empty(self, path, method):
+    def proxy_empty(self, path, method, query=None):
         try:
-            status, raw, _headers = spotify_request(path, method)
+            status, raw, _headers = spotify_request(path, method, query=query)
             if 200 <= status < 300:
                 self.send_json(200, {"ok": True})
             else:
