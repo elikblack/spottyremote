@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Spotty Server runtime with diagnostics, polite polling, and local play history."""
 
+import math
 import threading
 import urllib.parse
 from http.server import ThreadingHTTPServer
@@ -43,6 +44,32 @@ def _history_fresh_player_response():
 base._fresh_player_response = _history_fresh_player_response
 
 
+def _rate_limited_authoritative_response(remaining, reason):
+    return 503, {
+        "ok": False,
+        "error": "Authoritative Spotify player state is temporarily unavailable",
+        "spotify_status": 429,
+        "retry_after_seconds": max(1, int(math.ceil(remaining))),
+        "cooldown_reason": reason or "rate_limited",
+    }
+
+
+def _forced_player_response():
+    """Return fresh player state or a failure, never stale cached success."""
+    remaining, reason = base._cooldown_snapshot()
+    if remaining > 0:
+        return _rate_limited_authoritative_response(remaining, reason)
+
+    status, response = base._fresh_player_response()
+    if status == 200 and isinstance(response, dict):
+        cache = response.get("spotty_cache")
+        if isinstance(cache, dict) and cache.get("stale"):
+            retry_after = cache.get("cooldown_seconds") or 1
+            reason = cache.get("cooldown_reason") or "rate_limited"
+            return _rate_limited_authoritative_response(retry_after, reason)
+    return status, response
+
+
 class HistorySpottyHandler(base.InstrumentedSpottyHandler):
     def send_json(self, status, value):
         command = getattr(self, "_history_command", None)
@@ -62,6 +89,21 @@ class HistorySpottyHandler(base.InstrumentedSpottyHandler):
             limit = query.get("limit", [500])[0]
             self.send_json(200, history.snapshot(limit))
             return
+        if parsed.path == "/api/player":
+            query = urllib.parse.parse_qs(parsed.query)
+            force = query.get("refresh", ["0"])[0].strip().lower() in ("1", "true", "yes")
+            if force:
+                # The startup transaction treats refresh=1 as authoritative.
+                # Serialize forced refreshes just like the instrumented base
+                # handler, but never allow its stale-on-429 fallback to appear
+                # as a successful authoritative read.
+                with base._player_refresh_lock:
+                    try:
+                        status, response = _forced_player_response()
+                        self.send_json(status, response)
+                    except Exception as exc:
+                        self.send_json(503, {"ok": False, "error": str(exc)})
+                return
         super().do_GET()
 
     def do_POST(self):
