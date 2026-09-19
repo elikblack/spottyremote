@@ -419,9 +419,7 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         query = urllib.parse.parse_qs(parsed.query)
 
         if parsed.path == "/api/play":
-            device_id = query.get("device_id", [None])[0]
-            spotify_query = {"device_id": device_id} if device_id else None
-            self.proxy_empty("/me/player/play", "PUT", spotify_query)
+            self.handle_play(query)
             return
         if parsed.path == "/api/pause":
             self.proxy_empty("/me/player/pause", "PUT")
@@ -540,6 +538,44 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
             )
         except Exception as exc:
             self.send_json(502, {"ok": False, "error": str(exc)})
+
+    def handle_play(self, query):
+        device_id = query.get("device_id", [None])[0]
+        item_id = query.get("item_id", [None])[0]
+        item_type = query.get("item_type", ["track"])[0]
+
+        spotify_query = {"device_id": device_id} if device_id else None
+        if item_id is None:
+            self.proxy_empty("/me/player/play", "PUT", spotify_query)
+            return
+
+        if not _valid_spotify_id(item_id):
+            self.send_json(400, {"ok": False, "error": "item_id must be a Spotify item id"})
+            return
+        if item_type not in ("track", "episode"):
+            self.send_json(400, {"ok": False, "error": "item_type must be track or episode"})
+            return
+
+        spotify_uri = "spotify:{}:{}".format(item_type, item_id)
+        try:
+            status, raw, _headers = spotify_request(
+                "/me/player/play",
+                "PUT",
+                spotify_query,
+                {"uris": [spotify_uri]},
+            )
+            if 200 <= status < 300:
+                self.send_json(200, {
+                    "ok": True,
+                    "device_id": device_id or "",
+                    "item_type": item_type,
+                    "item_id": item_id,
+                })
+            else:
+                _status, data = api_result(status, raw)
+                self.send_json(502, data)
+        except Exception as exc:
+            self.send_json(503, {"ok": False, "error": str(exc)})
 
     def handle_playpause(self):
         try:
