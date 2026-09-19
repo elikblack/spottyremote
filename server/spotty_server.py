@@ -411,6 +411,9 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         if parsed.path == "/api/devices":
             self.proxy_json("/me/player/devices", "GET")
             return
+        if parsed.path == "/api/queue":
+            self.handle_queue()
+            return
 
         self.send_json(404, {"ok": False, "error": "Not found"})
 
@@ -424,8 +427,11 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         if parsed.path == "/api/pause":
             self.proxy_empty("/me/player/pause", "PUT")
             return
+        if parsed.path == "/api/queue":
+            self.handle_queue_add(query)
+            return
         if parsed.path == "/api/next":
-            self.proxy_empty("/me/player/next", "POST")
+            self.handle_next(query)
             return
         if parsed.path == "/api/previous":
             self.proxy_empty("/me/player/previous", "POST")
@@ -541,6 +547,74 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
             )
         except Exception as exc:
             self.send_json(502, {"ok": False, "error": str(exc)})
+
+    def handle_queue(self):
+        try:
+            status, raw, _headers = spotify_request("/me/player/queue")
+            out_status, data = api_result(status, raw)
+            if not (200 <= out_status < 300) or not isinstance(data, dict):
+                self.send_json(502, data)
+                return
+
+            current = data.get("currently_playing")
+            if not isinstance(current, dict):
+                current = {}
+            queue = data.get("queue")
+            if not isinstance(queue, list):
+                queue = []
+            next_item = queue[0] if queue and isinstance(queue[0], dict) else {}
+
+            self.send_json(200, {
+                "ok": True,
+                "current_item_id": current.get("id") or "",
+                "current_item_type": current.get("type") or "",
+                "next_item_id": next_item.get("id") or "",
+                "next_item_type": next_item.get("type") or "",
+                "queue_count": len(queue),
+            })
+        except Exception as exc:
+            self.send_json(503, {"ok": False, "error": str(exc)})
+
+    def handle_queue_add(self, query):
+        device_id = query.get("device_id", [None])[0]
+        item_id = query.get("item_id", [None])[0]
+        item_type = query.get("item_type", ["track"])[0]
+
+        if not _valid_spotify_id(item_id):
+            self.send_json(400, {"ok": False, "error": "item_id must be a Spotify item id"})
+            return
+        if item_type not in ("track", "episode"):
+            self.send_json(400, {"ok": False, "error": "item_type must be track or episode"})
+            return
+
+        spotify_uri = "spotify:{}:{}".format(item_type, item_id)
+        spotify_query = {"uri": spotify_uri}
+        if device_id:
+            spotify_query["device_id"] = device_id
+
+        try:
+            status, raw, _headers = spotify_request(
+                "/me/player/queue",
+                "POST",
+                spotify_query,
+            )
+            if 200 <= status < 300:
+                self.send_json(200, {
+                    "ok": True,
+                    "device_id": device_id or "",
+                    "item_type": item_type,
+                    "item_id": item_id,
+                })
+            else:
+                _status, data = api_result(status, raw)
+                self.send_json(502, data)
+        except Exception as exc:
+            self.send_json(503, {"ok": False, "error": str(exc)})
+
+    def handle_next(self, query):
+        device_id = query.get("device_id", [None])[0]
+        spotify_query = {"device_id": device_id} if device_id else None
+        self.proxy_empty("/me/player/next", "POST", spotify_query)
 
     def handle_play(self, query):
         device_id = query.get("device_id", [None])[0]
