@@ -439,6 +439,9 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         if parsed.path == "/api/transfer":
             self.handle_transfer(query)
             return
+        if parsed.path == "/api/repeat":
+            self.handle_repeat(query)
+            return
         if parsed.path == "/api/playlist/add":
             self.handle_playlist_add(query)
             return
@@ -655,6 +658,39 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
                     "ok": True,
                     "device_id": device_id,
                     "play": body.get("play"),
+                })
+            else:
+                _status, data = api_result(status, raw)
+                self.send_json(502, data)
+        except Exception as exc:
+            self.send_json(503, {"ok": False, "error": str(exc)})
+
+    def handle_repeat(self, query):
+        state = query.get("state", [None])[0]
+        device_id = query.get("device_id", [None])[0]
+
+        if state not in ("track", "context", "off"):
+            self.send_json(400, {
+                "ok": False,
+                "error": "state must be track, context, or off",
+            })
+            return
+
+        spotify_query = {"state": state}
+        if device_id:
+            spotify_query["device_id"] = device_id
+
+        try:
+            status, raw, _headers = spotify_request(
+                "/me/player/repeat",
+                "PUT",
+                spotify_query,
+            )
+            if 200 <= status < 300:
+                self.send_json(200, {
+                    "ok": True,
+                    "state": state,
+                    "device_id": device_id or "",
                 })
             else:
                 _status, data = api_result(status, raw)
