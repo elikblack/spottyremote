@@ -358,6 +358,7 @@ class SpottyHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = self.parsed_url()
+        query = urllib.parse.parse_qs(parsed.query)
 
         if parsed.path == "/":
             tokens = load_tokens()
@@ -412,7 +413,7 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
             self.proxy_json("/me/player/devices", "GET")
             return
         if parsed.path == "/api/queue":
-            self.handle_queue()
+            self.handle_queue(query)
             return
 
         self.send_json(404, {"ok": False, "error": "Not found"})
@@ -548,7 +549,16 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         except Exception as exc:
             self.send_json(502, {"ok": False, "error": str(exc)})
 
-    def handle_queue(self):
+    def handle_queue(self, query=None):
+        query = query or {}
+        find_item_id = query.get("item_id", [None])[0]
+        if find_item_id is not None and not _valid_spotify_id(find_item_id):
+            self.send_json(400, {
+                "ok": False,
+                "error": "item_id must be a Spotify item id",
+            })
+            return
+
         try:
             status, raw, _headers = spotify_request("/me/player/queue")
             out_status, data = api_result(status, raw)
@@ -564,14 +574,24 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
                 queue = []
             next_item = queue[0] if queue and isinstance(queue[0], dict) else {}
 
-            self.send_json(200, {
+            response = {
                 "ok": True,
                 "current_item_id": current.get("id") or "",
                 "current_item_type": current.get("type") or "",
                 "next_item_id": next_item.get("id") or "",
                 "next_item_type": next_item.get("type") or "",
                 "queue_count": len(queue),
-            })
+            }
+
+            if find_item_id is not None:
+                item_position = -1
+                for index, item in enumerate(queue):
+                    if isinstance(item, dict) and item.get("id") == find_item_id:
+                        item_position = index
+                        break
+                response["item_position"] = item_position
+
+            self.send_json(200, response)
         except Exception as exc:
             self.send_json(503, {"ok": False, "error": str(exc)})
 
