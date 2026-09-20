@@ -1,110 +1,83 @@
 # Spotty local server
 
-A small LAN-only Spotify control server for Spotty hardware. It uses only the Python standard library and is intended to run on an always-on Mac or other local computer.
+A LAN-only Spotify control service for Spotty hardware. It uses only the Python standard library and is intended to run on an always-on Mac or other local computer.
 
 ## Requirements
 
 - Python 3.8 or newer
 - outbound HTTPS access to Spotify
-- the server and Spotty hardware on the same trusted LAN
+- server and hardware clients on the same trusted LAN
 
 No pip packages are required.
 
+## Runtime layers
+
+The production runtime is not just `spotty_server.py`.
+
+```text
+spotty_supervisor.py
+  -> spotty_history_server.py
+      -> spotty_instrumented.py
+          -> spotty_server.py
+```
+
+Responsibilities:
+
+- `spotty_server.py`: generic Spotify OAuth/token owner and LAN API
+- `spotty_instrumented.py`: metrics, status dashboard, shared player-state cache, adaptive polling, Spotify rate-limit cooldowns
+- `spotty_history_server.py`: persistent Spotty-managed history and authoritative forced player reads
+- `spotty_supervisor.py`: process supervision and health checks
+- `install_launch_agent.py`: macOS launchd installation/restart helper
+
+A core-server change is still used by production because the wrapper layers import the core implementation.
+
 ## Spotify setup
 
-Add this redirect URI to the existing Spotify developer app and save the app settings:
+Add this redirect URI to the Spotify developer app:
 
 ```text
 http://127.0.0.1:8787/auth/callback
 ```
 
-Spotify permits HTTP OAuth redirects for explicit loopback addresses such as `127.0.0.1`. Authorization should therefore be performed in a browser on the Mac that is running Spotty Server.
-
-Spotty requests playback-control plus public/private playlist-modification scopes. If a server installation was authorized before playlist support was added, reconnect Spotify once so the stored refresh token receives the new playlist scopes.
-
-## Run
-
-For quick development you can still run the core server directly:
-
-```bash
-python3 server/spotty_server.py
-```
-
-For normal use, run it through the supervisor instead:
-
-```bash
-python3 server/spotty_supervisor.py
-```
-
-The supervisor starts `spotty_history_server.py`, which layers persistent Spotty-managed playback history on top of `spotty_instrumented.py`. The instrumented layer provides metrics, the LAN dashboard, shared player-state caching, adaptive idle polling, and Spotify rate-limit cooldown handling. The supervisor checks `/api/health` periodically and restarts the server if the process exits or if three consecutive health checks fail. Rapid repeated failures use a bounded exponential restart delay so a persistent problem cannot create a tight crash loop.
-
-Then, on that same Mac, open:
+Authorize in a browser on the Mac running SpottyServer:
 
 ```text
 http://127.0.0.1:8787/
 ```
 
-Choose **Connect / reconnect Spotify** and complete Spotify authorization. OAuth tokens are stored locally in:
+Spotty requests playback-control plus public/private playlist-modification scopes. If an installation was authorized before playlist support was added, reconnect Spotify once so the stored refresh token receives the newer scopes.
+
+OAuth tokens are stored locally in:
 
 ```text
 server/.spotty_tokens.json
 ```
 
-That file is ignored by Git and should not be copied into the repository.
+That file is ignored by Git and must not be committed or copied into the repository.
 
-## Spotify traffic policy
+## Running the server
 
-Hardware clients are allowed to poll the LAN server frequently. The instrumented server decides when an upstream Spotify refresh is actually necessary, so adding more Spotty devices does not multiply Spotify polling traffic.
+For focused development, the core server can be run directly:
 
-Player-state refresh policy:
-
-```text
-playing        5 seconds
-paused         15 seconds
-inactive       15s, 30s, 60s, 120s, then 300s between Spotify checks
+```bash
+python3 server/spotty_server.py
 ```
 
-An explicit playback command marks the player cache dirty so the next player read checks Spotify again. The previous cached value is retained as a stale fallback if Spotify is temporarily rate limited.
+That does **not** include the normal history/instrumentation production behavior.
 
-When Spotify returns HTTP 429, Spotty records the response, honors `Retry-After` when present, and blocks further upstream Spotify calls until the cooldown expires. If no retry interval is supplied, Spotty uses a conservative local fallback. The dashboard and `/api/metrics` expose current cooldown state, cache state, cache hits, and suppressed upstream requests.
+For a manual production-equivalent run:
 
-The manual dashboard button uses:
-
-```text
-GET /api/player?refresh=1
+```bash
+python3 server/spotty_supervisor.py
 ```
 
-which bypasses the normal player cache but still respects an active Spotify cooldown.
+The supervisor starts `spotty_history_server.py`, checks `/api/health`, and restarts the child if it exits or repeatedly stops responding.
 
-## Spotty playback history
-
-The normal server runtime keeps a local history of tracks played during Spotty-managed playback sessions. This is deliberately not Spotify account history: a playback session is armed by a successful play, play/pause-to-play, next, previous, or transfer-and-play command that came through Spotty Server. While that managed session continues, newly observed tracks are appended to the local log. If playback disappears or moves away from the managed device, the session ends.
-
-The history file is local server state and is ignored by Git:
-
-```text
-server/.spotty_play_history.jsonl
-```
-
-A readable history page is linked from the dashboard:
-
-```text
-http://127.0.0.1:8787/history
-```
-
-The backing JSON API is:
-
-```text
-GET /api/history?limit=500
-```
-
-History records include the observation time, Spotify item ID/type, title, artist, album when available, output device, and playback context URI. Logging is passive: it uses the same authoritative player refreshes already performed by the shared player cache and does not add Spotify API traffic.
+For the normal always-on macOS installation, use launchd as described below.
 
 ## Recommended macOS service setup
 
-For an always-on Spotty installation, install the included LaunchAgent. This starts Spotty when you log in, runs the supervisor, restarts it if it exits, and captures logs for postmortem debugging.
-
-First stop any manually running Spotty server, then from the repository root run:
+Install or refresh the LaunchAgent from the repository root:
 
 ```bash
 python3 server/install_launch_agent.py
@@ -116,7 +89,17 @@ The installer resolves the current repository path and Python interpreter automa
 ~/Library/LaunchAgents/com.elistuff.spottyserver.plist
 ```
 
-Logs are written to:
+The generated agent uses:
+
+```text
+RunAtLoad = true
+KeepAlive = true
+service label = com.elistuff.spottyserver
+```
+
+It runs `spotty_supervisor.py`, which in turn runs the history/instrumented/core stack.
+
+Logs:
 
 ```text
 ~/Library/Logs/SpottyServer.log
@@ -130,73 +113,250 @@ python3 server/install_launch_agent.py --status
 python3 server/install_launch_agent.py --uninstall
 ```
 
-Re-running the installer replaces and restarts the existing LaunchAgent. If Spotty misbehaves again, `SpottyServer.err.log` should contain both the server traceback and supervisor restart messages, which makes the underlying failure much easier to identify.
+Re-running the installer is the normal restart procedure after pulling server changes. It boots out the old agent, rewrites the plist, bootstraps the service, enables it, and kickstarts it.
+
+If port 8787 immediately becomes occupied again after killing a server child, that is normally launchd/supervisor doing their job. Do not start a second `nohup spotty_server.py` alongside the managed service.
 
 ## LAN access
 
-The server listens on all network interfaces by default. Other devices on the LAN can use the Mac's local IP address or a working mDNS hostname, for example:
+The server listens on all network interfaces by default.
+
+Examples:
 
 ```text
 http://192.168.1.50:8787/api/health
 http://your-mac.local:8787/api/health
 ```
 
-The first hardware test should use the numeric LAN IP address so hostname resolution is not another variable.
+For first hardware setup, a numeric LAN IP is useful because it removes mDNS from the debugging chain.
+
+## Spotify traffic policy
+
+Hardware clients may poll the LAN server frequently. The instrumented layer decides when another upstream Spotify refresh is actually needed, so adding more hardware clients does not multiply Spotify player polling.
+
+Current player-state refresh policy:
+
+```text
+playing        5 seconds
+paused         15 seconds
+inactive       15s, 30s, 60s, 120s, then 300s
+```
+
+Explicit playback commands mark the player cache dirty so the next player read can refresh upstream state.
+
+When Spotify returns HTTP 429, Spotty records the event, honors `Retry-After` when available, and suppresses further upstream requests until the cooldown expires. The dashboard and `/api/metrics` expose cache/cooldown/request information.
+
+## Authoritative player reads
+
+```text
+GET /api/player?refresh=1
+```
+
+is used by hardware when stale cached success is not safe enough, especially during launch-volume verification and ambiguous playback-command handling.
+
+The production history wrapper serializes these forced refreshes and does not allow a stale cached player value during a Spotify cooldown to masquerade as an authoritative fresh success.
+
+## Spotty playback history
+
+The production runtime keeps a local history of tracks observed during Spotty-managed playback sessions.
+
+This is deliberately not Spotify account history. A managed session is armed by successful Spotty playback actions such as play, play/pause-to-play, Next, Previous, or transfer-and-play. While the managed session remains on the tracked device, newly observed items are appended.
+
+Backing file:
+
+```text
+server/.spotty_play_history.jsonl
+```
+
+Readable page:
+
+```text
+http://127.0.0.1:8787/history
+```
+
+JSON API:
+
+```text
+GET /api/history?limit=500
+```
+
+History records include observation time, Spotify item ID/type, title, artist, album when available, output device, and playback context URI.
+
+Logging is passive and piggybacks on authoritative player refreshes already being performed.
 
 ## API
+
+Production wrappers add metrics/history behavior, while the generic hardware API comes from the core server.
 
 ```text
 GET  /api/health
 GET  /api/metrics
 GET  /history
 GET  /api/history?limit=500
+
 GET  /api/player
 GET  /api/player?refresh=1
 GET  /api/devices
-GET  /api/artwork?item_type=track&track_id=...
+
+GET  /api/queue
+GET  /api/queue?item_id=<spotify-item-id>
+
+GET  /api/artwork?item_type=track|episode&track_id=<spotify-id>
+
 POST /api/play
 POST /api/pause
 POST /api/playpause
 POST /api/next
 POST /api/previous
-POST /api/volume?value=50
-POST /api/transfer?device_id=...&play=true
-POST /api/playlist/add?playlist_id=...&item_type=track&item_id=...
+POST /api/volume?value=0..100&device_id=<optional>
+POST /api/transfer?device_id=<spotify-device-id>&play=true|false
+
+POST /api/queue?item_type=track|episode&item_id=<spotify-id>&device_id=<optional>
+POST /api/repeat?state=track|context|off&device_id=<optional>
+POST /api/playlist/add?playlist_id=<spotify-playlist-id>&item_type=track|episode&item_id=<spotify-id>
 ```
 
-`/api/playlist/add` is deliberately generic. Hardware chooses the destination playlist and supplies the current Spotify item ID; the server owns authentication and translates that into Spotify's playlist API.
+The API is deliberately small and JSON-oriented so simple hardware clients do not need to reproduce Spotify OAuth or API details.
 
-The API is deliberately small and returns JSON intended for simple hardware clients.
+## Player response
+
+`/api/player` preserves the raw Spotify player object for compatibility and also exposes hardware-friendly top-level fields such as:
+
+```text
+track_id
+item_type
+track_name
+artist_name
+is_playing
+volume_percent
+supports_volume
+device_id
+device_name
+progress_ms
+duration_ms
+```
+
+JSON is serialized as UTF-8 rather than escaping ordinary non-ASCII names as `\uXXXX`.
+
+## Queue API
+
+### Read
+
+```text
+GET /api/queue
+```
+
+returns a compact projection of Spotify's playback queue:
+
+```text
+ok
+current_item_id
+current_item_type
+next_item_id
+next_item_type
+queue_count
+```
+
+Supplying an item ID:
+
+```text
+GET /api/queue?item_id=<spotify-item-id>
+```
+
+adds:
+
+```text
+item_position
+```
+
+`item_position` is the zero-based index of the first returned queue item with that Spotify ID, or `-1` when not present.
+
+This is used by SpottyDial's Recently Played implementation after it appends a selected item. The dial can then determine how many Next operations are needed before that item becomes current.
+
+Caveat: if the same Spotify item ID already appears earlier in the queue, the current lookup returns that first existing match. If this becomes a practical problem, the client/server contract should compare before/after queue snapshots rather than identifying an insertion only by item ID.
+
+### Add
+
+```text
+POST /api/queue?item_type=track|episode&item_id=<id>&device_id=<optional>
+```
+
+adds the item to Spotify's playback queue.
+
+The server does not impose SpottyDial-specific policy about whether to skip existing queued items. That policy remains in the firmware.
+
+## Repeat
+
+Generic repeat control:
+
+```text
+POST /api/repeat?state=track|context|off&device_id=<optional>
+```
+
+The endpoint remains available as a primitive. Current SpottyDial Recently Played playback deliberately preserves the user's existing repeat mode and does not call this endpoint.
+
+## Playlist append
+
+```text
+POST /api/playlist/add?playlist_id=...&item_type=track|episode&item_id=...
+```
+
+Hardware chooses the destination playlist and supplies the current Spotify item identity. The server owns authentication and translates that into Spotify's playlist API.
+
+## Artwork proxy
+
+```text
+GET /api/artwork?item_type=track|episode&track_id=<spotify-id>
+```
+
+The server fetches item metadata, chooses an image near 300 px, downloads it, and keeps a small in-memory cache.
+
+Binary responses include:
+
+```text
+Content-Type
+Content-Length
+X-Artwork-Width
+X-Artwork-Height
+```
+
+This lets ESP32 clients remain on simple LAN HTTP.
 
 ## Supervisor configuration
 
-The defaults are intentionally conservative and should not need adjustment for normal use. They can be overridden with environment variables if needed:
+Defaults:
 
 ```text
-SPOTTY_HEALTH_INTERVAL     default: 10 seconds
-SPOTTY_HEALTH_TIMEOUT      default: 2 seconds
-SPOTTY_STARTUP_GRACE       default: 5 seconds
-SPOTTY_HEALTH_FAILURES     default: 3
-SPOTTY_MAX_RESTART_DELAY   default: 30 seconds
-SPOTTY_STABLE_UPTIME       default: 60 seconds
+SPOTTY_HEALTH_INTERVAL     10 seconds
+SPOTTY_HEALTH_TIMEOUT       2 seconds
+SPOTTY_STARTUP_GRACE        5 seconds
+SPOTTY_HEALTH_FAILURES      3
+SPOTTY_MAX_RESTART_DELAY   30 seconds
+SPOTTY_STABLE_UPTIME       60 seconds
 ```
-
-The macOS installer copies any of these values that are present in its environment into the generated LaunchAgent.
-
-## Security model
-
-This first version is LAN-only and does not authenticate clients. Anyone who can reach the server on port 8787 can issue playback or playlist-modification commands and can read the local Spotty playback history. Run it only on a trusted local network and do not expose port 8787 to the public internet.
-
-If Spotty later needs remote access or untrusted-network use, add device authentication and HTTPS before exposing it.
-
-## Configuration
 
 Optional environment variables:
 
 ```text
-SPOTTY_HOST          default: 0.0.0.0
-SPOTTY_PORT          default: 8787
-SPOTIFY_CLIENT_ID    defaults to the public Spotty Spotify Client ID
+SPOTTY_HOST
+SPOTTY_PORT
+SPOTIFY_CLIENT_ID
+SPOTTY_HEALTH_INTERVAL
+SPOTTY_HEALTH_TIMEOUT
+SPOTTY_STARTUP_GRACE
+SPOTTY_HEALTH_FAILURES
+SPOTTY_MAX_RESTART_DELAY
+SPOTTY_STABLE_UPTIME
 ```
 
-Changing the port also changes the OAuth callback URI, so the matching loopback redirect must be added to the Spotify developer app.
+The macOS installer copies supported values from its environment into the generated LaunchAgent.
+
+Changing the port also changes the OAuth callback URI, so the matching loopback redirect must be configured in the Spotify developer app.
+
+## Security model
+
+The current LAN API has no client authentication.
+
+Anyone who can reach port 8787 can issue playback/playlist commands and read Spotty-managed history. Run the service only on a trusted LAN and do not expose it directly to the public internet.
+
+Never commit refresh tokens, access tokens, or a Spotify Client Secret.
