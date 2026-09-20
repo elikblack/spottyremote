@@ -1,23 +1,31 @@
 # SpottyRemote
 
-Reusable Spotify remote-control core plus browser and hardware-facing front ends.
+Reusable Spotify control core plus browser and hardware-facing front ends.
 
-The project is intentionally split so Spotify behavior is not tied to a particular display, knob, browser, or microcontroller.
+The project is intentionally split so Spotify mechanics are not tied to a particular display, knob, browser, or microcontroller. Hardware owns device-specific interaction policy; SpottyServer owns OAuth, Spotify API mechanics, shared player state, retries, history, and generic playback primitives.
 
 ## Current structure
 
 ```text
 core/
-  spotify-client.js   Spotify Web API commands; UI/platform agnostic
-  playback-state.js   normalized playback state + progress interpolation
+  spotify-client.js        browser/shared Spotify API commands
+  playback-state.js        normalized playback state + interpolation
+
 web/
-  browser-auth.js     browser PKCE authorization + token refresh
-  config.js           public browser configuration
-  app.js              reference web remote
-  styles.css          reference UI
+  browser-auth.js          browser PKCE authorization + token refresh
+  config.js                public browser configuration
+  app.js                   reference web remote
+  styles.css               reference UI
+
 server/
-  spotty_server.py    LAN API, Spotify OAuth/token owner, artwork proxy
-index.html             GitHub Pages entry point
+  spotty_server.py         generic LAN API + Spotify OAuth/token owner
+  spotty_instrumented.py   metrics, dashboard, shared player cache, cooldowns
+  spotty_history_server.py production history wrapper
+  spotty_supervisor.py     health-check/restart supervisor
+  install_launch_agent.py  macOS launchd installer
+  README.md                detailed server operations
+
+index.html                  GitHub Pages entry point
 ```
 
 ## Web remote
@@ -32,60 +40,112 @@ The browser version uses Authorization Code with PKCE. No Spotify Client Secret 
 
 The browser front end predates the LAN server and still owns its own browser-side Spotify session. It remains useful as an independent remote and for richer controls.
 
-## LAN server
+## SpottyServer
 
-`server/spotty_server.py` is the hardware-facing Spotty service. It uses only the Python standard library and is designed for Python 3.8+.
+SpottyServer is the LAN Spotify boundary used by hardware such as SpottyDial.
 
-The server:
+The production runtime is layered:
 
-- owns the Spotify OAuth/refresh-token session used by hardware
-- refreshes Spotify access tokens centrally
-- exposes a small generic HTTP API to LAN clients
-- enumerates Spotify Connect devices and transfers playback between them
-- proxies/caches album artwork so an ESP32 never needs Spotify/CDN credentials or TLS handling for artwork
-- binds to `0.0.0.0:8787` by default
-
-Start it with:
-
-```bash
-python3 server/spotty_server.py
+```text
+spotty_supervisor.py
+  -> spotty_history_server.py
+      -> spotty_instrumented.py
+          -> spotty_server.py
 ```
 
-Authorize Spotify from the server Mac at:
+The layers provide:
+
+- Spotify OAuth and refresh-token ownership
+- generic playback/device/queue/playlist primitives
+- Spotify Connect device discovery and transfer
+- album-art proxy/cache
+- shared player-state caching for multiple hardware clients
+- adaptive idle polling
+- Spotify 429 cooldown handling
+- metrics and LAN status dashboard
+- persistent Spotty-managed playback history
+- health supervision and automatic restart
+
+The service binds to `0.0.0.0:8787` by default.
+
+See [server/README.md](server/README.md) for setup, launchd installation, logs, configuration, and detailed route behavior.
+
+## Recommended macOS runtime
+
+For an always-on Mac, use the included LaunchAgent rather than running the core server manually:
+
+```bash
+python3 server/install_launch_agent.py
+```
+
+The LaunchAgent runs the supervisor, uses `RunAtLoad` and `KeepAlive`, and writes logs to:
+
+```text
+~/Library/Logs/SpottyServer.log
+~/Library/Logs/SpottyServer.err.log
+```
+
+Re-running the installer replaces and restarts the existing service. This is also the normal restart mechanism after pulling server changes.
+
+Service label:
+
+```text
+com.elistuff.spottyserver
+```
+
+## Spotify authorization
+
+Authorize Spotify from a browser on the server Mac:
 
 ```text
 http://127.0.0.1:8787/
 ```
 
-The Spotify developer dashboard redirect URI for this server is exactly:
+Spotify redirect URI:
 
 ```text
 http://127.0.0.1:8787/auth/callback
 ```
 
-Tokens are stored beside the server in `.spotty_tokens.json`, which is intentionally ignored by Git.
+Tokens are stored locally in:
 
-### Hardware API
+```text
+server/.spotty_tokens.json
+```
 
-Current routes include:
+That file is intentionally ignored by Git.
+
+## Hardware API
+
+Important current routes include:
 
 ```text
 GET  /api/health
+GET  /api/metrics
 GET  /api/player
+GET  /api/player?refresh=1
 GET  /api/devices
-GET  /api/artwork?item_type=track&track_id=<spotify-id>
+GET  /api/queue
+GET  /api/queue?item_id=<spotify-item-id>
+GET  /api/artwork?item_type=track|episode&track_id=<spotify-id>
+GET  /api/history?limit=<n>
+GET  /history
+
 POST /api/play
 POST /api/pause
 POST /api/playpause
 POST /api/next
 POST /api/previous
-POST /api/volume?value=0..100
-POST /api/transfer?device_id=<spotify-device-id>&play=true|false
+POST /api/volume?value=0..100&device_id=<optional>
+POST /api/transfer?device_id=<id>&play=true|false
+POST /api/queue?item_type=track|episode&item_id=<id>&device_id=<optional>
+POST /api/repeat?state=track|context|off&device_id=<optional>
+POST /api/playlist/add?playlist_id=<id>&item_type=track|episode&item_id=<id>
 ```
 
-`/api/transfer` is intentionally generic. Hardware decides which endpoint it prefers and when a transfer should happen; the server only performs the Spotify operation. The `play` argument is optional at the Spotify layer but the current hardware sends it explicitly.
+`/api/queue` returns a compact current/next snapshot and queue count. If `item_id` is supplied, it also returns the zero-based position of the first matching item in the returned Spotify queue, or `-1` when absent. SpottyDial uses this to implement queue-first Recently Played playback.
 
-`/api/player` preserves the raw Spotify player object for compatibility but also exposes dial-friendly top-level fields:
+`/api/player` preserves the raw Spotify player object for compatibility and also exposes hardware-friendly top-level fields including:
 
 ```text
 track_id
@@ -97,38 +157,70 @@ volume_percent
 supports_volume
 device_id
 device_name
+progress_ms
+duration_ms
 ```
 
-Those active-device fields let a hardware client make endpoint decisions without parsing the nested raw player object.
+The production history wrapper treats `/api/player?refresh=1` as an authoritative read for safety-sensitive startup verification.
 
-JSON is serialized as UTF-8 rather than escaping ordinary non-ASCII names as `\uXXXX`.
+## Spotty-managed history
 
-### Artwork proxy
+Production SpottyServer keeps a local history of tracks observed during Spotty-managed playback sessions.
 
-`/api/artwork` accepts a Spotify track or episode ID. The server fetches the item's metadata, chooses the available image closest to 300 px, downloads the image, and keeps a small in-memory cache of recent covers. This keeps artwork bandwidth modest for a 240×240 hardware display and lets the ESP32 stay entirely on plain LAN HTTP.
+This is deliberately not a general Spotify account listening-history service.
 
-The binary response includes `Content-Type`, `Content-Length`, and source-size headers:
+Backing file:
 
 ```text
+server/.spotty_play_history.jsonl
+```
+
+Readable page:
+
+```text
+http://127.0.0.1:8787/history
+```
+
+API:
+
+```text
+GET /api/history?limit=500
+```
+
+History logging piggybacks on authoritative player refreshes and does not require a separate upstream polling stream.
+
+## Artwork proxy
+
+`/api/artwork` accepts a Spotify track or episode ID. The server fetches item metadata, chooses an available image near 300 px, downloads it, and keeps a small in-memory cache of recent covers.
+
+The binary response includes:
+
+```text
+Content-Type
+Content-Length
 X-Artwork-Width
 X-Artwork-Height
 ```
 
-The hardware uses those dimensions to center-crop the cover to its round display.
+This keeps ESP32 clients on simple LAN HTTP rather than making them own Spotify/CDN authentication and artwork TLS behavior.
 
-## Current controls
+## SpottyDial relationship
 
-The shared Spotify behavior supports:
+SpottyDial's preferred-output, touch UI, Recently Played action semantics, launch volume, and menu behavior remain firmware policy.
 
-- read current track and active device
-- play / pause
-- previous / next
-- volume
-- enumerate Spotify Connect devices
-- transfer playback between devices through both the browser and LAN server
-- seek, shuffle, and repeat in the browser client
+The server stays generic. It exposes queue inspection/add, Next, device lookup/transfer, repeat control, playlist append, history, and authoritative player reads; SpottyDial combines those primitives into its physical-control model.
 
-The Elecrow SpottyDial keeps its preferred-device policy on the device. Its current v1.1 development firmware resolves the friendly name `Everywhere` through `/api/devices`, then uses `/api/transfer` as needed. This keeps future hardware remotes free to implement different endpoint rules without adding remote-specific policy to the server.
+In particular, SpottyDial's current Recent Play behavior is:
+
+```text
+queue selected item
+-> locate its position
+-> Next until current
+-> verify
+-> Play
+```
+
+Existing queued songs ahead of the selected item may therefore be intentionally consumed. That policy belongs to the dial, not SpottyServer.
 
 ## Security rules
 
@@ -137,9 +229,12 @@ The Elecrow SpottyDial keeps its preferred-device policy on the device. Its curr
 - The Client ID is not a secret and may be public.
 - Browser production OAuth uses PKCE over HTTPS.
 - The LAN server uses loopback PKCE and stores its refresh token locally.
-- The current LAN API has **no client authentication**. Keep it on a trusted network until device authentication is added.
+- The LAN API has **no client authentication**.
+- Keep port 8787 on a trusted network and do not expose it publicly.
 - If Spotify invalidates a refresh token, authorize that client again.
 
 ## Direction
 
-The LAN server is the Spotify boundary for hardware, but not the owner of each remote's behavior. Hardware expresses intents and device-specific policy; the service layer owns OAuth, Spotify API details, token refresh, generic playback/device primitives, retries, and artwork fetching.
+The LAN server should remain the generic Spotify boundary for hardware rather than becoming the owner of each remote's interaction design.
+
+New server features should generally be reusable primitives. Device-specific policy should stay with the hardware unless multiple clients genuinely need the same behavior.
