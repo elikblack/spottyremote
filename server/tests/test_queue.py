@@ -86,6 +86,42 @@ class QueueEndpointTests(unittest.TestCase):
             },
         )
 
+    def test_queue_snapshot_reports_requested_item_position(self):
+        handler = self.make_handler()
+
+        def fake_spotify_request(path, method="GET", query=None, body=None, retry_auth=True):
+            payload = {
+                "currently_playing": {"id": "current-id", "type": "track"},
+                "queue": [
+                    {"id": "next-id", "type": "track"},
+                    {"id": "wanted-id", "type": "track"},
+                    {"id": "later-id", "type": "track"},
+                ],
+            }
+            return 200, json.dumps(payload).encode("utf-8"), {}
+
+        server.spotify_request = fake_spotify_request
+        handler.handle_queue({"item_id": ["wanted-id"]})
+
+        self.assertEqual(handler.sent[0][0], 200)
+        self.assertEqual(handler.sent[0][1]["item_position"], 1)
+
+    def test_queue_snapshot_reports_missing_requested_item(self):
+        handler = self.make_handler()
+
+        def fake_spotify_request(path, method="GET", query=None, body=None, retry_auth=True):
+            payload = {
+                "currently_playing": {"id": "current-id", "type": "track"},
+                "queue": [{"id": "next-id", "type": "track"}],
+            }
+            return 200, json.dumps(payload).encode("utf-8"), {}
+
+        server.spotify_request = fake_spotify_request
+        handler.handle_queue({"item_id": ["missing-id"]})
+
+        self.assertEqual(handler.sent[0][0], 200)
+        self.assertEqual(handler.sent[0][1]["item_position"], -1)
+
     def test_next_targets_device_when_requested(self):
         handler = self.make_handler()
         calls = []
