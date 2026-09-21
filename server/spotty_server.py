@@ -45,17 +45,15 @@ SCOPES = [
 ]
 
 ARTWORK_CACHE_ITEMS = 12
-ARTWORK_SOURCE_CACHE_ITEMS = 48
 ARTWORK_DEFAULT_SIZE = 300
-ARTWORK_MIN_SIZE = 16
-ARTWORK_MAX_SIZE = 4096
+ARTWORK_MIN_SIZE = 64
+ARTWORK_MAX_SIZE = 2048
 ARTWORK_MAX_BYTES = 2 * 1024 * 1024
 
 _oauth_state = None
 _pkce_verifier = None
 _token_lock = threading.Lock()
 _artwork_cache = OrderedDict()
-_artwork_source_cache = OrderedDict()
 _artwork_cache_lock = threading.Lock()
 
 
@@ -255,41 +253,47 @@ def _artwork_cache_put(key, value):
             _artwork_cache.popitem(last=False)
 
 
-def _artwork_source_cache_get(key):
-    with _artwork_cache_lock:
-        value = _artwork_source_cache.get(key)
-        if value is not None:
-            _artwork_source_cache.move_to_end(key)
-        return value
-
-
-def _artwork_source_cache_put(key, value):
-    with _artwork_cache_lock:
-        _artwork_source_cache[key] = value
-        _artwork_source_cache.move_to_end(key)
-        while len(_artwork_source_cache) > ARTWORK_SOURCE_CACHE_ITEMS:
-            _artwork_source_cache.popitem(last=False)
-
-
-def _pick_artwork(images, target_width=ARTWORK_DEFAULT_SIZE):
-    candidates = [image for image in images if isinstance(image, dict) and image.get("url")]
+def _pick_artwork(images, target_size=None):
+    candidates = [
+        image for image in images
+        if isinstance(image, dict) and image.get("url")
+    ]
     if not candidates:
         return None
 
-    def score(image):
-        width = image.get("width")
-        if not isinstance(width, int):
-            return (100000, 0)
-        # Pick the closest Spotify-provided source. On an exact tie, prefer the
-        # larger source so callers never lose detail arbitrarily.
-        return (abs(width - target_width), -width)
+    if target_size is None:
+        # Preserve the original SpottyDial behavior exactly: choose the source
+        # whose reported width is numerically closest to 300 pixels.
+        def legacy_score(image):
+            width = image.get("width")
+            return abs(width - ARTWORK_DEFAULT_SIZE) if isinstance(width, int) else 100000
 
-    return min(candidates, key=score)
+        return min(candidates, key=legacy_score)
+
+    sized = [
+        image for image in candidates
+        if isinstance(image.get("width"), int) and image.get("width") > 0
+    ]
+    if not sized:
+        # Spotify image lists are ordered, so retain deterministic behavior if
+        # width metadata is absent rather than inventing a size.
+        return candidates[0]
+
+    large_enough = [image for image in sized if image["width"] >= target_size]
+    if large_enough:
+        return min(large_enough, key=lambda image: image["width"])
+
+    return max(sized, key=lambda image: image["width"])
 
 
-def _artwork_sources(item_type, item_id):
-    source_key = "{}:{}".format(item_type, item_id)
-    cached = _artwork_source_cache_get(source_key)
+def fetch_artwork(item_type, item_id, target_size=None):
+    item_type = item_type if item_type in ("track", "episode") else "track"
+    key = "{}:{}:{}".format(
+        item_type,
+        item_id,
+        "legacy" if target_size is None else target_size,
+    )
+    cached = _artwork_cache_get(key)
     if cached is not None:
         return cached
 
@@ -311,28 +315,9 @@ def _artwork_sources(item_type, item_id):
     else:
         images = item.get("images") if isinstance(item.get("images"), list) else []
 
-    candidates = [image for image in images if isinstance(image, dict) and image.get("url")]
-    if not candidates:
-        raise RuntimeError("No artwork available for this item")
-
-    _artwork_source_cache_put(source_key, candidates)
-    return candidates
-
-
-def fetch_artwork(item_type, item_id, target_width=ARTWORK_DEFAULT_SIZE):
-    item_type = item_type if item_type in ("track", "episode") else "track"
-    images = _artwork_sources(item_type, item_id)
-    image = _pick_artwork(images, target_width)
+    image = _pick_artwork(images, target_size)
     if not image:
         raise RuntimeError("No artwork available for this item")
-
-    # Cache by the actual Spotify image source, not by requested size. Different
-    # requests that resolve to the same source therefore share the downloaded
-    # bytes.
-    key = "{}:{}:{}".format(item_type, item_id, image["url"])
-    cached = _artwork_cache_get(key)
-    if cached is not None:
-        return cached
 
     request = urllib.request.Request(
         image["url"],
@@ -418,7 +403,7 @@ class SpottyHandler(BaseHTTPRequestHandler):
 <p>Health: <code>/api/health</code><br>
 Player: <code>/api/player</code><br>
 Devices: <code>/api/devices</code><br>
-Artwork: <code>/api/artwork?item_type=track&amp;track_id=...</code><br>
+Artwork: <code>/api/artwork?item_type=track&amp;track_id=...&amp;size=480</code> (size optional)<br>
 Play: <code>POST /api/play?device_id=...</code> (device_id optional)<br>
 Volume: <code>POST /api/volume?value=...&amp;device_id=...</code> (device_id optional)<br>
 Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code><br>
@@ -570,7 +555,7 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         query = urllib.parse.parse_qs(parsed.query)
         item_id = query.get("track_id", [None])[0]
         item_type = query.get("item_type", ["track"])[0]
-        raw_size = query.get("size", [str(ARTWORK_DEFAULT_SIZE)])[0]
+        raw_size = query.get("size", [None])[0]
 
         if not _valid_spotify_id(item_id):
             self.send_json(400, {"ok": False, "error": "track_id must be a Spotify item id"})
@@ -578,28 +563,35 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         if item_type not in ("track", "episode"):
             self.send_json(400, {"ok": False, "error": "item_type must be track or episode"})
             return
-        try:
-            requested_size = int(raw_size)
-        except (TypeError, ValueError):
-            self.send_json(400, {"ok": False, "error": "size must be an integer number of pixels"})
-            return
-        if requested_size < ARTWORK_MIN_SIZE or requested_size > ARTWORK_MAX_SIZE:
-            self.send_json(400, {
-                "ok": False,
-                "error": "size must be between {} and {} pixels".format(
-                    ARTWORK_MIN_SIZE, ARTWORK_MAX_SIZE
-                ),
-            })
-            return
+
+        target_size = None
+        if raw_size is not None:
+            try:
+                target_size = int(raw_size)
+            except (TypeError, ValueError):
+                self.send_json(400, {
+                    "ok": False,
+                    "error": "size must be an integer from {} to {}".format(
+                        ARTWORK_MIN_SIZE, ARTWORK_MAX_SIZE
+                    ),
+                })
+                return
+            if target_size < ARTWORK_MIN_SIZE or target_size > ARTWORK_MAX_SIZE:
+                self.send_json(400, {
+                    "ok": False,
+                    "error": "size must be an integer from {} to {}".format(
+                        ARTWORK_MIN_SIZE, ARTWORK_MAX_SIZE
+                    ),
+                })
+                return
 
         try:
-            artwork = fetch_artwork(item_type, item_id, requested_size)
+            artwork = fetch_artwork(item_type, item_id, target_size)
             self.send_bytes(
                 200,
                 artwork["payload"],
                 artwork["content_type"],
                 {
-                    "X-Artwork-Requested-Size": requested_size,
                     "X-Artwork-Width": artwork["width"],
                     "X-Artwork-Height": artwork["height"],
                 },
