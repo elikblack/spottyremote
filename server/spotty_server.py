@@ -389,7 +389,7 @@ class SpottyHandler(BaseHTTPRequestHandler):
 <p>Health: <code>/api/health</code><br>
 Player: <code>/api/player</code><br>
 Devices: <code>/api/devices</code><br>
-Artwork: <code>/api/artwork?item_type=track&amp;track_id=...&amp;size=480</code> (size optional)<br>
+Artwork: <code>/api/artwork?item_type=track&amp;track_id=...&amp;size=480</code> (size required)<br>
 Play: <code>POST /api/play?device_id=...</code> (device_id optional)<br>
 Volume: <code>POST /api/volume?value=...&amp;device_id=...</code> (device_id optional)<br>
 Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code><br>
