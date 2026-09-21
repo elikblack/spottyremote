@@ -45,7 +45,6 @@ SCOPES = [
 ]
 
 ARTWORK_CACHE_ITEMS = 12
-ARTWORK_DEFAULT_SIZE = 300
 ARTWORK_MIN_SIZE = 64
 ARTWORK_MAX_SIZE = 2048
 ARTWORK_MAX_BYTES = 2 * 1024 * 1024
@@ -253,22 +252,13 @@ def _artwork_cache_put(key, value):
             _artwork_cache.popitem(last=False)
 
 
-def _pick_artwork(images, target_size=None):
+def _pick_artwork(images, target_size):
     candidates = [
         image for image in images
         if isinstance(image, dict) and image.get("url")
     ]
     if not candidates:
         return None
-
-    if target_size is None:
-        # Preserve the original SpottyDial behavior exactly: choose the source
-        # whose reported width is numerically closest to 300 pixels.
-        def legacy_score(image):
-            width = image.get("width")
-            return abs(width - ARTWORK_DEFAULT_SIZE) if isinstance(width, int) else 100000
-
-        return min(candidates, key=legacy_score)
 
     sized = [
         image for image in candidates
@@ -286,13 +276,9 @@ def _pick_artwork(images, target_size=None):
     return max(sized, key=lambda image: image["width"])
 
 
-def fetch_artwork(item_type, item_id, target_size=None):
+def fetch_artwork(item_type, item_id, target_size):
     item_type = item_type if item_type in ("track", "episode") else "track"
-    key = "{}:{}:{}".format(
-        item_type,
-        item_id,
-        "legacy" if target_size is None else target_size,
-    )
+    key = "{}:{}:{}".format(item_type, item_id, target_size)
     cached = _artwork_cache_get(key)
     if cached is not None:
         return cached
@@ -564,26 +550,33 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
             self.send_json(400, {"ok": False, "error": "item_type must be track or episode"})
             return
 
-        target_size = None
-        if raw_size is not None:
-            try:
-                target_size = int(raw_size)
-            except (TypeError, ValueError):
-                self.send_json(400, {
-                    "ok": False,
-                    "error": "size must be an integer from {} to {}".format(
-                        ARTWORK_MIN_SIZE, ARTWORK_MAX_SIZE
-                    ),
-                })
-                return
-            if target_size < ARTWORK_MIN_SIZE or target_size > ARTWORK_MAX_SIZE:
-                self.send_json(400, {
-                    "ok": False,
-                    "error": "size must be an integer from {} to {}".format(
-                        ARTWORK_MIN_SIZE, ARTWORK_MAX_SIZE
-                    ),
-                })
-                return
+        if raw_size is None:
+            self.send_json(400, {
+                "ok": False,
+                "error": "size is required and must be an integer from {} to {}".format(
+                    ARTWORK_MIN_SIZE, ARTWORK_MAX_SIZE
+                ),
+            })
+            return
+
+        try:
+            target_size = int(raw_size)
+        except (TypeError, ValueError):
+            self.send_json(400, {
+                "ok": False,
+                "error": "size must be an integer from {} to {}".format(
+                    ARTWORK_MIN_SIZE, ARTWORK_MAX_SIZE
+                ),
+            })
+            return
+        if target_size < ARTWORK_MIN_SIZE or target_size > ARTWORK_MAX_SIZE:
+            self.send_json(400, {
+                "ok": False,
+                "error": "size must be an integer from {} to {}".format(
+                    ARTWORK_MIN_SIZE, ARTWORK_MAX_SIZE
+                ),
+            })
+            return
 
         try:
             artwork = fetch_artwork(item_type, item_id, target_size)
