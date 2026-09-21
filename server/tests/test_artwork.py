@@ -20,9 +20,6 @@ class ArtworkSelectionTests(unittest.TestCase):
             {"url": "large", "width": 640, "height": 640},
         ]
 
-    def test_legacy_selection_stays_near_300(self):
-        self.assertEqual(server._pick_artwork(self.images)["url"], "medium")
-
     def test_explicit_size_64_selects_64(self):
         self.assertEqual(server._pick_artwork(self.images, 64)["url"], "small")
 
@@ -73,33 +70,19 @@ class ArtworkHandlerTests(unittest.TestCase):
         )
         return handler
 
-    def test_omitted_size_uses_legacy_semantics(self):
+    def test_omitted_size_returns_400(self):
         handler = self.make_handler()
-        calls = []
-
-        def fake_fetch(item_type, item_id, target_size=None):
-            calls.append((item_type, item_id, target_size))
-            return {
-                "payload": b"image",
-                "content_type": "image/jpeg",
-                "width": 300,
-                "height": 300,
-            }
-
-        server.fetch_artwork = fake_fetch
         parsed = urllib.parse.urlparse("/api/artwork?item_type=track&track_id=abc123")
         handler.handle_artwork(parsed)
 
-        self.assertEqual(calls, [("track", "abc123", None)])
-        self.assertEqual(handler.sent_bytes[0][0], 200)
-        self.assertEqual(handler.sent_bytes[0][3]["X-Artwork-Width"], 300)
-        self.assertEqual(handler.sent_bytes[0][3]["X-Artwork-Height"], 300)
+        self.assertEqual(handler.sent_json[0][0], 400)
+        self.assertIn("size is required", handler.sent_json[0][1]["error"])
 
     def test_valid_size_is_passed_as_integer(self):
         handler = self.make_handler()
         calls = []
 
-        def fake_fetch(item_type, item_id, target_size=None):
+        def fake_fetch(item_type, item_id, target_size):
             calls.append((item_type, item_id, target_size))
             return {
                 "payload": b"image",
@@ -194,11 +177,11 @@ class ArtworkCacheTests(unittest.TestCase):
         server.spotify_request = fake_spotify_request
         server.urllib.request.urlopen = fake_urlopen
 
-        legacy = server.fetch_artwork("track", "abc123")
+        medium = server.fetch_artwork("track", "abc123", 300)
         large = server.fetch_artwork("track", "abc123", 480)
 
-        self.assertEqual(legacy["width"], 300)
-        self.assertEqual(legacy["payload"], b"small")
+        self.assertEqual(medium["width"], 300)
+        self.assertEqual(medium["payload"], b"small")
         self.assertEqual(large["width"], 640)
         self.assertEqual(large["payload"], b"large")
         self.assertEqual(len(metadata_calls), 2)
