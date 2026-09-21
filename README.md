@@ -127,7 +127,7 @@ GET  /api/player?refresh=1
 GET  /api/devices
 GET  /api/queue
 GET  /api/queue?item_id=<spotify-item-id>
-GET  /api/artwork?item_type=track|episode&track_id=<spotify-id>
+GET  /api/artwork?item_type=track|episode&track_id=<spotify-id>&size=<optional-target-width>
 GET  /api/history?limit=<n>
 GET  /history
 
@@ -191,7 +191,15 @@ History logging piggybacks on authoritative player refreshes and does not requir
 
 ## Artwork proxy
 
-`/api/artwork` accepts a Spotify track or episode ID. The server fetches item metadata, chooses an available image near 300 px, downloads it, and keeps a small in-memory cache of recent covers.
+`/api/artwork` accepts a Spotify track or episode ID plus an optional requested source width. With no `size` parameter, the server preserves the legacy behavior and chooses an available image nearest 300 px. With an explicit `size`, it chooses the smallest Spotify-provided source at least that wide, or the largest available source when none is large enough.
+
+For example, SpottySquare can request:
+
+```text
+/api/artwork?item_type=track&track_id=<spotify-id>&size=480
+```
+
+The server returns Spotify's original compressed image bytes unchanged. `size=480` is therefore a source-selection hint, not a guarantee of 480 x 480 output; a typical Spotify image set may return a 640 x 640 source. Actual dimensions remain authoritative in the response headers.
 
 The binary response includes:
 
