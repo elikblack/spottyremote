@@ -201,7 +201,7 @@ GET  /api/devices
 GET  /api/queue
 GET  /api/queue?item_id=<spotify-item-id>
 
-GET  /api/artwork?item_type=track|episode&track_id=<spotify-id>
+GET  /api/artwork?item_type=track|episode&track_id=<spotify-id>&size=<optional-target-width>
 
 POST /api/play
 POST /api/pause
@@ -306,10 +306,24 @@ Hardware chooses the destination playlist and supplies the current Spotify item 
 ## Artwork proxy
 
 ```text
-GET /api/artwork?item_type=track|episode&track_id=<spotify-id>
+GET /api/artwork?item_type=track|episode&track_id=<spotify-id>&size=<optional-target-width>
 ```
 
-The server fetches item metadata, chooses an image near 300 px, downloads it, and keeps a small in-memory cache.
+If `size` is omitted, the server preserves the original SpottyDial behavior and chooses the Spotify source whose width is nearest 300 px.
+
+An explicit `size` from 64 through 2048 pixels opts into quality-first source selection: the server chooses the smallest available Spotify image at least as wide as requested, or the largest available image when no source reaches the requested width. The value is a selection hint only. SpottyServer does not resize or recompress artwork.
+
+For a common Spotify 64 / 300 / 640 image set:
+
+```text
+size=64   -> 64
+size=240  -> 300
+size=300  -> 300
+size=480  -> 640
+size=900  -> 640
+```
+
+Different requested sizes use distinct in-memory cache entries so a legacy Dial request cannot poison a larger Square request, or vice versa.
 
 Binary responses include:
 
