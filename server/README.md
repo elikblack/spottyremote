@@ -306,7 +306,7 @@ Hardware chooses the destination playlist and supplies the current Spotify item 
 ## Artwork proxy
 
 ```text
-GET /api/artwork?item_type=track|episode&track_id=<spotify-id>&size=<optional-target-width>
+GET /api/artwork?item_type=track|episode&track_id=<spotify-id>&size=<target-width>
 ```
 
 `size` is required and must be an integer from 64 through 2048 pixels. The server chooses the smallest available Spotify image at least as wide as requested, or the largest available image when no source reaches the requested width. The value is a selection hint only. SpottyServer does not resize or recompress artwork.
