@@ -1256,7 +1256,7 @@ body{margin:0;padding:0;background:var(--background);color:var(--foreground)}
 #south-sun .sun-small{font-size:12px;color:var(--muted-foreground)}
 #south-sun .sun-controls{margin:24px 0 16px;display:grid;grid-template-columns:1fr 1fr;gap:30px}
 #south-sun .sun-controls label{display:block;min-width:0}#south-sun .sun-controls input{width:100%;margin-top:12px}
-#south-sun .sun-sky{margin-top:20px;border:1px solid var(--border);border-radius:18px;background:linear-gradient(180deg,color-mix(in srgb,var(--blue) 7%,var(--background)),var(--background));padding:12px 4px 0}
+#south-sun .sun-sky{margin-top:20px;border:1px solid var(--border);border-radius:18px;background:linear-gradient(180deg,color-mix(in srgb,var(--blue) var(--sun-sky-depth,40%),var(--background)) 0%,color-mix(in srgb,var(--blue) 10%,var(--background)) 82%,var(--background) 100%);padding:12px 4px 0}
 #south-sun .sun-summary{margin:18px 0 8px;display:flex;flex-wrap:wrap;gap:8px 28px;font-size:14px}
 #south-sun #sun-view{color:var(--muted-foreground)}
 #south-sun .sun-landmark-heading{font-size:15px;font-weight:500;margin:26px 0 12px}
@@ -1320,7 +1320,7 @@ html+=`<path d="M${px},${anchorY}L${px},${labelY+6}" fill="none" stroke="var(--m
 const sx=x(shipyard.az),sy=y(Math.max(0,horizon(shipyard.az)));
 html+=`<g transform="translate(${sx},${sy})" fill="var(--background)" stroke="var(--foreground)" stroke-width="1.2" stroke-linejoin="round"><title>shipyard, ${shipyard.az.toFixed(1)}°; cranes and ships are not to scale</title><path d="M-31,-6H-4L-9,0H-26Z M8,-5H31L26,0H12Z M-25,-6V-11H-17V-6 M14,-5V-10H21V-5"/><path fill="none" d="M-12,-6V-36L-31,-24H2M-12,-36L2,-24V-15 M-18,-6L-12,-27L-6,-6 M17,-10V-30L1,-21H32M17,-30L32,-21V-13 M12,-10L17,-25L22,-10"/><path d="M0,-25V-49" fill="none" stroke="var(--muted-foreground)"/><text x="0" y="-55" text-anchor="middle" stroke="none">shipyard</text></g>`;
 let paths={arc:[],under:[]},last=null;for(let s of samples){if(s.az<azMin||s.az>azMax||s.el<0){last=null;continue}let type=s.el+.833>=horizon(s.az)?'arc':'under';paths[type].push(`${last===type?'L':'M'}${x(s.az).toFixed(2)},${y(s.el).toFixed(2)}`);last=type}for(let type in paths)html+=`<path class="${type}" d="${paths[type].join(' ')}"/>`;
-let peak=samples.reduce((a,b)=>a.el>b.el?a:b);html+=`<circle cx="${x(peak.az)}" cy="${y(peak.el)}" r="5" fill="var(--viz-series-1)"/><text x="${x(peak.az)}" y="${y(peak.el)-12}" text-anchor="middle">Noon · ${peak.el.toFixed(1)}°</text>`;
+let peak=samples.reduce((a,b)=>a.el>b.el?a:b);const skyDepth=24+34*Math.max(0,Math.min(1,(peak.el-19)/47));root.style.setProperty('--sun-sky-depth',skyDepth.toFixed(1)+'%');html+=`<circle cx="${x(peak.az)}" cy="${y(peak.el)}" r="5" fill="var(--viz-series-1)"/><text x="${x(peak.az)}" y="${y(peak.el)-12}" text-anchor="middle">Noon · ${peak.el.toFixed(1)}°</text>`;
 html+='</g>';
 const viewPath=samples.filter(p=>p.az>=azMin&&p.az<=azMax&&p.el>=0&&p.el+.833>=horizon(p.az));
 const risePoint=vis[0],setPoint=vis.at(-1);
