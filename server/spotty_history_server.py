@@ -2,7 +2,6 @@
 """Spotty Server runtime with diagnostics, polite polling, and local play history."""
 
 import math
-import threading
 import urllib.parse
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -20,14 +19,6 @@ def _history_page():
         return HISTORY_PAGE_FILE.read_text(encoding="utf-8")
     except OSError as exc:
         return "<h1>Spotty playback history</h1><p>History page unavailable: {}</p>".format(exc)
-
-
-def _cached_device_id():
-    with base._policy_lock:
-        cache = base._player_cache
-        if isinstance(cache, dict):
-            return cache.get("device_id") or ""
-    return ""
 
 
 def _history_fresh_player_response():
@@ -71,14 +62,6 @@ def _forced_player_response():
 
 
 class HistorySpottyHandler(base.InstrumentedSpottyHandler):
-    def send_json(self, status, value):
-        command = getattr(self, "_history_command", None)
-        if command and 200 <= status < 300 and isinstance(value, dict) and value.get("ok"):
-            path, cached_device_id = command
-            history.note_command_success(path, value, cached_device_id)
-            self._history_command = None
-        super().send_json(status, value)
-
     def do_GET(self):
         parsed = self.parsed_url()
         if parsed.path == "/history":
@@ -106,21 +89,6 @@ class HistorySpottyHandler(base.InstrumentedSpottyHandler):
                 return
         super().do_GET()
 
-    def do_POST(self):
-        parsed = self.parsed_url()
-        if parsed.path in {
-            "/api/play",
-            "/api/playpause",
-            "/api/next",
-            "/api/previous",
-            "/api/transfer",
-        }:
-            command_device_id = _cached_device_id()
-            if parsed.path == "/api/play":
-                query = urllib.parse.parse_qs(parsed.query)
-                command_device_id = query.get("device_id", [command_device_id])[0]
-            self._history_command = (parsed.path, command_device_id)
-        super().do_POST()
 
 
 if __name__ == "__main__":
