@@ -36,7 +36,7 @@
   <header>
     <div>
       <h1>Playback history</h1>
-      <p class="muted">Tracks observed during Spotty-managed playback sessions</p>
+      <p class="muted">Tracks observed by SpottyServer while Spotify is playing</p>
     </div>
     <a class="button" href="/">Back to dashboard</a>
   </header>
@@ -66,7 +66,7 @@ async function loadHistory() {
     if (!data.entries.length) {
       const empty = document.createElement('div');
       empty.className = 'empty';
-      empty.textContent = 'No Spotty-managed playback has been logged yet.';
+      empty.textContent = 'No playback has been observed yet.';
       historyEl.append(empty);
       return;
     }
