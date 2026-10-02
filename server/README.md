@@ -25,7 +25,7 @@ Responsibilities:
 
 - `spotty_server.py`: generic Spotify OAuth/token owner and LAN API
 - `spotty_instrumented.py`: metrics, status dashboard, shared player-state cache, adaptive polling, Spotify rate-limit cooldowns
-- `spotty_history_server.py`: persistent Spotty-managed history and authoritative forced player reads
+- `spotty_history_server.py`: persistent observed-playback history and authoritative forced player reads
 - `spotty_supervisor.py`: process supervision and health checks
 - `install_launch_agent.py`: macOS launchd installation/restart helper
 
@@ -158,9 +158,9 @@ The production history wrapper serializes these forced refreshes and does not al
 
 ## Spotty playback history
 
-The production runtime keeps a local history of tracks observed during Spotty-managed playback sessions.
+The production runtime keeps a local history of every playing item it observes during fresh Spotify player-state reads, regardless of whether playback was started through Spotty, the Spotify app, Alexa, or another controller.
 
-This is deliberately not Spotify account history. A managed session is armed by successful Spotty playback actions such as play, play/pause-to-play, Next, Previous, or transfer-and-play. While the managed session remains on the tracked device, newly observed items are appended.
+This is still not guaranteed to be complete Spotify account history. Logging is observation-based: if no Spotty client causes player state to refresh while a short-lived item plays, the server may never see it. Repeated refreshes of the same current item are deduplicated; when the observed Spotify item ID changes, the new item is appended.
 
 Backing file:
 
@@ -369,6 +369,6 @@ Changing the port also changes the OAuth callback URI, so the matching loopback 
 
 The current LAN API has no client authentication.
 
-Anyone who can reach port 8787 can issue playback/playlist commands and read Spotty-managed history. Run the service only on a trusted LAN and do not expose it directly to the public internet.
+Anyone who can reach port 8787 can issue playback/playlist commands and read Spotty playback history. Run the service only on a trusted LAN and do not expose it directly to the public internet.
 
 Never commit refresh tokens, access tokens, or a Spotify Client Secret.
