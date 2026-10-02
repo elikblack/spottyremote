@@ -63,7 +63,7 @@ The layers provide:
 - adaptive idle polling
 - Spotify 429 cooldown handling
 - metrics and LAN status dashboard
-- persistent Spotty-managed playback history
+- persistent observed playback history
 - health supervision and automatic restart
 
 The service binds to `0.0.0.0:8787` by default.
@@ -163,11 +163,11 @@ duration_ms
 
 The production history wrapper treats `/api/player?refresh=1` as an authoritative read for safety-sensitive startup verification.
 
-## Spotty-managed history
+## Spotty playback history
 
-Production SpottyServer keeps a local history of tracks observed during Spotty-managed playback sessions.
+Production SpottyServer keeps a local history of every playing item it observes during fresh Spotify player-state reads, regardless of which controller started playback.
 
-This is deliberately not a general Spotify account listening-history service.
+This remains observation-based rather than a complete Spotify account listening-history service. Tracks can be missed if no Spotty client triggers a player refresh while they are playing, while repeated observations of the same current item are deduplicated.
 
 Backing file:
 
