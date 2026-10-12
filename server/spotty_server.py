@@ -626,6 +626,28 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
                 "queue_count": len(queue),
             }
 
+            # Opt-in keeps the transaction lookup response small and compatible.
+            if query.get("include", [""])[0] == "items":
+                entries = []
+                for item in queue[:50]:
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type")
+                    item_id = item.get("id")
+                    if (item_type not in ("track", "episode") or not isinstance(item_id, str)
+                            or len(item_id) != 22 or not item_id.isascii() or not item_id.isalnum()):
+                        continue
+                    artists = item.get("artists") or []
+                    show = item.get("show") or {}
+                    artist = (show.get("name", "") if isinstance(show, dict) else "") if item_type == "episode" else ", ".join(
+                        a.get("name", "") for a in artists if isinstance(a, dict) and isinstance(a.get("name"), str))
+                    entries.append({
+                        "track_id": item_id,
+                        "item_type": item_type,
+                        "track_name": str(item.get("name") or "")[:128],
+                        "artist_name": str(artist or "")[:96],
+                    })
+                response["entries"] = entries
             if find_item_id is not None:
                 item_position = -1
                 for index, item in enumerate(queue):

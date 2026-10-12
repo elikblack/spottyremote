@@ -94,14 +94,14 @@ class QueueEndpointTests(unittest.TestCase):
                 "currently_playing": {"id": "current-id", "type": "track"},
                 "queue": [
                     {"id": "next-id", "type": "track"},
-                    {"id": "wanted-id", "type": "track"},
+                    {"id": "4iV5W9uYEdYUVa79Axb7Rh", "type": "track"},
                     {"id": "later-id", "type": "track"},
                 ],
             }
             return 200, json.dumps(payload).encode("utf-8"), {}
 
         server.spotify_request = fake_spotify_request
-        handler.handle_queue({"item_id": ["wanted-id"]})
+        handler.handle_queue({"item_id": ["4iV5W9uYEdYUVa79Axb7Rh"]})
 
         self.assertEqual(handler.sent[0][0], 200)
         self.assertEqual(handler.sent[0][1]["item_position"], 1)
@@ -117,10 +117,36 @@ class QueueEndpointTests(unittest.TestCase):
             return 200, json.dumps(payload).encode("utf-8"), {}
 
         server.spotify_request = fake_spotify_request
-        handler.handle_queue({"item_id": ["missing-id"]})
+        handler.handle_queue({"item_id": ["5iV5W9uYEdYUVa79Axb7Rh"]})
 
         self.assertEqual(handler.sent[0][0], 200)
         self.assertEqual(handler.sent[0][1]["item_position"], -1)
+
+    def test_item_list_is_bounded_ordered_and_optional(self):
+        handler = self.make_handler()
+        track = {"id": "4iV5W9uYEdYUVa79Axb7Rh", "type": "track",
+                 "name": "Long " * 100, "artists": [{"name": "Artist"}]}
+        episode = {"id": "5iV5W9uYEdYUVa79Axb7Rh", "type": "episode",
+                   "name": "Episode", "show": {"name": "Show"}}
+        payload = {"queue": [track, episode, track] + [track] * 55}
+        server.spotify_request = lambda *a, **k: (200, json.dumps(payload).encode(), {})
+        handler.handle_queue({"include": ["items"]})
+        entries = handler.sent[-1][1]["entries"]
+        self.assertEqual(len(entries), 50)
+        self.assertEqual(entries[0], entries[2])
+        self.assertEqual(len(entries[0]["track_name"]), 128)
+        self.assertEqual(entries[1]["artist_name"], "Show")
+        handler.handle_queue({"item_id": [track["id"]]})
+        self.assertNotIn("entries", handler.sent[-1][1])
+        self.assertEqual(handler.sent[-1][1]["item_position"], 0)
+
+    def test_item_list_empty_and_unsupported_items(self):
+        handler = self.make_handler()
+        for queue in ([], [None, {"id": "local", "type": "track"}]):
+            server.spotify_request = lambda *a, **k: (200, json.dumps({"queue": queue}).encode(), {})
+            handler.handle_queue({"include": ["items"]})
+            self.assertEqual(handler.sent[-1], (200, dict(handler.sent[-1][1], entries=[])))
+            self.assertEqual(handler.sent[-1][1]["entries"], [])
 
     def test_next_targets_device_when_requested(self):
         handler = self.make_handler()

@@ -372,3 +372,16 @@ The current LAN API has no client authentication.
 Anyone who can reach port 8787 can issue playback/playlist commands and read Spotty playback history. Run the service only on a trusted LAN and do not expose it directly to the public internet.
 
 Never commit refresh tokens, access tokens, or a Spotify Client Secret.
+
+### Queue list clients
+
+`GET /api/queue?include=items` adds an `entries` array containing up to 50
+upcoming items in Spotify order (duplicates retained), with `track_id`,
+`item_type`, `track_name` (128 characters), and `artist_name` (96 characters).
+Episodes use their show name as artist. Unsupported/local/unavailable IDs are
+omitted. Currently playing remains separate. Empty queue returns `entries: []`.
+Default and `item_id` lookup responses stay unchanged. This is a snapshot, not
+a queue editor: POST appends to the explicit queue; it does not remove an
+existing context occurrence or insert ahead of existing manual additions.
+
+SpottySquare Queue requires this server update and a managed-service restart.
