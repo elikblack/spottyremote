@@ -452,7 +452,7 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
             self.proxy_empty("/me/player/previous", "POST")
             return
         if parsed.path == "/api/playpause":
-            self.handle_playpause()
+            self.handle_playpause(query)
             return
         if parsed.path == "/api/volume":
             self.handle_volume(query)
@@ -742,28 +742,64 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
         except Exception as exc:
             self.send_json(503, {"ok": False, "error": str(exc)})
 
-    def handle_playpause(self):
+    def handle_playpause(self, query=None):
+        require_device = (query or {}).get("require_device", [""])[0].lower() == "true"
+        def fail(status, raw, stage):
+            _status, data = api_result(status, raw)
+            data["stage"] = stage
+            data["error"] = "{}: {}".format(stage, data.get("error") or "request failed")
+            self.send_json(502, data)
+
         try:
             status, raw, _headers = spotify_request("/me/player")
-            if status == 204:
-                target_path = "/me/player/play"
-            elif status == 200:
-                player = decode_json(raw) or {}
-                target_path = "/me/player/pause" if player.get("is_playing") else "/me/player/play"
-            else:
-                _status, data = api_result(status, raw)
-                self.send_json(502, data)
+            if status == 204 and require_device:
+                # Square owns preferred-output/safe idle launch. Do not guess
+                # a resume target when its previously active session disappeared.
+                self.send_json(409, {"ok": False, "error": "No active Spotify device"})
+                return
+            if status not in (200, 204):
+                fail(status, raw, "player read")
+                return
+            # Preserve legacy clients' untargeted idle-resume behavior unless
+            # they opt into Square's strict active-device requirement.
+            player = {"is_playing": False} if status == 204 else decode_json(raw)
+            device = player.get("device") if isinstance(player, dict) else None
+            if not isinstance(device, dict): device = {}
+            if (not isinstance(player, dict) or not isinstance(player.get("is_playing"), bool) or
+                    (require_device and not device.get("id"))):
+                self.send_json(409, {"ok": False, "error": "Spotify player/device state incomplete"})
+                return
+            if device.get("is_restricted"):
+                self.send_json(409, {"ok": False, "error": "Spotify device does not allow playback control"})
                 return
 
-            action_status, action_raw, _headers = spotify_request(target_path, "PUT")
+            device_id = device.get("id") or ""
+            wants_play = not player["is_playing"]
+            action = "play" if wants_play else "pause"
+            target_path = "/me/player/" + action
+            spotify_query = {"device_id": device_id} if device_id else None
+            action_status, action_raw, _headers = spotify_request(target_path, "PUT", spotify_query)
+            if action_status == 404 and device_id:
+                # Recheck once, preserving both the chosen action and output.
+                # Re-running a toggle after an ambiguous result could undo it.
+                time.sleep(0.15)
+                fresh_status, fresh_raw, _headers = spotify_request("/me/player")
+                fresh = decode_json(fresh_raw) if fresh_status == 200 else None
+                fresh_device = fresh.get("device") if isinstance(fresh, dict) else None
+                if (not isinstance(fresh_device, dict) or fresh_device.get("id") != device_id or
+                        fresh_device.get("is_restricted") or
+                        not isinstance(fresh.get("is_playing"), bool)):
+                    fail(action_status, action_raw, action + " (device unavailable or changed)")
+                    return
+                if fresh["is_playing"] == wants_play:
+                    self.send_json(200, {"ok": True, "action": action,
+                                         "device_id": device_id, "verified": True})
+                    return
+                action_status, action_raw, _headers = spotify_request(target_path, "PUT", spotify_query)
             if 200 <= action_status < 300:
-                self.send_json(200, {
-                    "ok": True,
-                    "action": "pause" if target_path.endswith("pause") else "play",
-                })
+                self.send_json(200, {"ok": True, "action": action, "device_id": device_id})
             else:
-                _status, data = api_result(action_status, action_raw)
-                self.send_json(502, data)
+                fail(action_status, action_raw, action)
         except Exception as exc:
             self.send_json(503, {"ok": False, "error": str(exc)})
 

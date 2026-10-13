@@ -391,3 +391,16 @@ up to four upcoming entries, with title and artist capped at 512 Unicode
 characters each. `current_item_id` anchors the prediction. Unlike the list
 projection, preview stops at an unsupported item to avoid presenting a later
 song as the immediate next song. No playback mutations occur during prefetch.
+
+### Play/pause device targeting
+
+`POST /api/playpause` reads fresh Spotify player state, selects one action,
+and explicitly targets the returned device. A command 404 permits one fresh
+read and one retry of that same action on that same device; if the desired
+state is already observed, no second mutation is sent. It never retoggles or
+retargets another output on retry. Other errors/transport failures are not
+retried. Errors identify `player read`, `play`, or `pause` as the failing stage.
+
+SpottySquare sends `?require_device=true`: idle/missing device state returns
+409 so firmware can refresh and use its safe idle-launch procedure. Legacy
+callers without that flag retain their original untargeted idle resume.
