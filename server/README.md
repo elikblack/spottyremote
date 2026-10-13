@@ -385,3 +385,9 @@ a queue editor: POST appends to the explicit queue; it does not remove an
 existing context occurrence or insert ahead of existing manual additions.
 
 SpottySquare Queue requires this server update and a managed-service restart.
+
+`GET /api/queue?include=preview` is the speculative Now Playing variant:
+up to four upcoming entries, with title and artist capped at 512 Unicode
+characters each. `current_item_id` anchors the prediction. Unlike the list
+projection, preview stops at an unsupported item to avoid presenting a later
+song as the immediate next song. No playback mutations occur during prefetch.

@@ -627,15 +627,18 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
             }
 
             # Opt-in keeps the transaction lookup response small and compatible.
-            if query.get("include", [""])[0] == "items":
+            if query.get("include", [""])[0] in ("items", "preview"):
+                preview = query.get("include", [""])[0] == "preview"
                 entries = []
-                for item in queue[:50]:
+                for item in queue[:4 if preview else 50]:
                     if not isinstance(item, dict):
+                        if preview: break
                         continue
                     item_type = item.get("type")
                     item_id = item.get("id")
                     if (item_type not in ("track", "episode") or not isinstance(item_id, str)
                             or len(item_id) != 22 or not item_id.isascii() or not item_id.isalnum()):
+                        if preview: break
                         continue
                     artists = item.get("artists") or []
                     show = item.get("show") or {}
@@ -644,8 +647,8 @@ Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=trac
                     entries.append({
                         "track_id": item_id,
                         "item_type": item_type,
-                        "track_name": str(item.get("name") or "")[:128],
-                        "artist_name": str(artist or "")[:96],
+                        "track_name": str(item.get("name") or "")[:512 if preview else 128],
+                        "artist_name": str(artist or "")[:512 if preview else 96],
                     })
                 response["entries"] = entries
             if find_item_id is not None:

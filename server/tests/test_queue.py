@@ -148,6 +148,23 @@ class QueueEndpointTests(unittest.TestCase):
             self.assertEqual(handler.sent[-1], (200, dict(handler.sent[-1][1], entries=[])))
             self.assertEqual(handler.sent[-1][1]["entries"], [])
 
+    def test_preview_preserves_full_text_and_only_four_upcoming_items(self):
+        handler = self.make_handler()
+        track = {"id": "4iV5W9uYEdYUVa79Axb7Rh", "type": "track",
+                 "name": "🎶" * 600, "artists": [{"name": "A" * 600}]}
+        payload = {"currently_playing": {"id": "current", "type": "track"}, "queue": [track] * 10}
+        server.spotify_request = lambda *a, **k: (200, json.dumps(payload).encode(), {})
+        handler.handle_queue({"include": ["preview"]})
+        response = handler.sent[-1][1]
+        self.assertEqual(response["current_item_id"], "current")
+        self.assertEqual(len(response["entries"]), 4)
+        self.assertEqual(response["entries"][0]["track_name"], "🎶" * 512)
+        self.assertEqual(len(response["entries"][0]["artist_name"]), 512)
+        # An unsupported next item must not make a later song look like next.
+        payload["queue"].insert(0, {"id": None, "type": "track"})
+        handler.handle_queue({"include": ["preview"]})
+        self.assertEqual(handler.sent[-1][1]["entries"], [])
+
     def test_next_targets_device_when_requested(self):
         handler = self.make_handler()
         calls = []
