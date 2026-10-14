@@ -25,6 +25,7 @@ import urllib.request
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from spotty_weather import weather
 
 
 HOST = os.environ.get("SPOTTY_HOST", "0.0.0.0")
@@ -395,6 +396,10 @@ Volume: <code>POST /api/volume?value=...&amp;device_id=...</code> (device_id opt
 Transfer: <code>POST /api/transfer?device_id=...&amp;play=true</code><br>
 Playlist append: <code>POST /api/playlist/add?playlist_id=...&amp;item_type=track&amp;item_id=...</code></p>
 </body></html>""".format(state=state, color=color, scopes=scopes))
+            return
+
+        if parsed.path == "/api/weather":
+            self.send_json(200, weather.snapshot())
             return
 
         if parsed.path == "/api/health":

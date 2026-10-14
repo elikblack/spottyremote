@@ -404,3 +404,22 @@ retried. Errors identify `player read`, `play`, or `pause` as the failing stage.
 SpottySquare sends `?require_device=true`: idle/missing device state returns
 409 so firmware can refresh and use its safe idle-launch procedure. Legacy
 callers without that flag retain their original untargeted idle resume.
+
+### Idle clock and weather
+
+`GET /api/weather` returns server `unix_time` even when weather is unavailable.
+`available`, `temperature`, `unit`, WMO `weather_code`, `is_day`, `age_seconds`,
+and `stale` describe the last successful reading. The endpoint needs no Spotify
+session and never waits for the weather provider: one daemon fetch populates a
+shared cache. Active clients trigger refreshes every 15 minutes; failures retry
+after one minute. Readings older than two hours are omitted.
+
+Defaults in `spotty_weather.py`: Ballard/Seattle ZIP **98107** (47.668, -122.377),
+**Fahrenheit**. These are configuration constants, not device menu settings.
+Data: [Open-Meteo](https://open-meteo.com/) / [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+The free endpoint is intended for personal, noncommercial use. Devices should
+show the source attribution; Square shows it beneath the temperature. No API key.
+
+After pulling this update, restart the managed server from the repository root:
+`python3 server/install_launch_agent.py`. Square's idle clock uses the server
+clock with local Seattle DST rules; weather availability does not gate playback.
